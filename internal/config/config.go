@@ -25,6 +25,27 @@ const FileName = "secretferry.json"
 // DefaultItemTitle names a 1Password item when the configuration does not.
 const DefaultItemTitle = "secretferry - {name}"
 
+// The sources a value can be read from. SourcePrompt is the default: a hidden
+// prompt on a terminal, else standard input.
+const (
+	SourcePrompt      = "prompt"
+	SourceStdin       = "stdin"
+	SourceOnePassword = "1password"
+)
+
+// Sources lists every source, for messages.
+var Sources = []string{SourcePrompt, SourceStdin, SourceOnePassword}
+
+// ValidSource reports whether name is one of Sources.
+func ValidSource(name string) bool {
+	for _, s := range Sources {
+		if s == name {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	accountRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	kindRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -32,6 +53,9 @@ var (
 
 // File is secretferry.json as written.
 type File struct {
+	// Source is where set and rotate read a value from when --source is not given:
+	// prompt (the default), stdin or 1password.
+	Source      string      `json:"source"`
 	Cloudflare  Cloudflare  `json:"cloudflare"`
 	OnePassword OnePassword `json:"onePassword"`
 	Secrets     []Secret    `json:"secrets"`
@@ -142,6 +166,15 @@ func Parse(data []byte, path string) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if c.Source == "" {
+		c.Source = SourcePrompt
+	}
+	if !ValidSource(c.Source) {
+		return ferry.Errorf("source must be one of %s", strings.Join(Sources, ", "))
+	}
+	if c.Source == SourceOnePassword && c.OnePassword.Vault == "" {
+		return ferry.Errorf("source is %s, so onePassword.vault is required", SourceOnePassword)
+	}
 	if c.Cloudflare.AccountID != "" && !accountRe.MatchString(c.Cloudflare.AccountID) {
 		return ferry.Errorf("cloudflare.accountId must be a 32-character account id")
 	}

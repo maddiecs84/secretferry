@@ -33,7 +33,7 @@ You also need:
   `wrangler login`, secretferry will borrow that login when no token is set; wrangler is never
   required, and that login may lack the permission;
 - the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`, or `op.exe` under WSL),
-  signed in, for `provision` and `--from-1password`.
+  signed in, for `provision` and `--source 1password`.
 
 ## Quick start
 
@@ -66,11 +66,13 @@ export CLOUDFLARE_API_TOKEN=…
 # and only then set it in Secrets Store. Safe to run again after a failure.
 secretferry provision --secret signing-key
 
-# Or set a value you already have (typed or pasted at a prompt that shows nothing,
-# or piped on standard input, or read from the 1Password item):
+# Or set a value you already have. --source says where it is read from:
+#   prompt    (the default) a prompt that shows nothing on a terminal, else standard input
+#   stdin     standard input to the end, even on a terminal
+#   1password the item the configuration names
 secretferry set --name acme-sandbox-01-signing-key
 secretferry set --name acme-sandbox-01-signing-key < key.txt
-secretferry set --secret signing-key --param env=sandbox-01 --from-1password
+secretferry set --secret signing-key --param env=sandbox-01 --source 1password
 
 # Replace a value for good. The name is typed twice so a recalled command line does not do it.
 secretferry rotate --name acme-sandbox-01-signing-key --confirm acme-sandbox-01-signing-key
@@ -86,8 +88,8 @@ before it is sent**. `provision` therefore saves the key in 1Password and reads 
 touches Cloudflare. Separately, a value in an argument is in a process list and a shell history,
 so there is no option for it:
 
-- the value is read from a prompt, standard input or the 1Password item, and goes to Cloudflare
-  in a request body and nowhere else;
+- the value is read from the chosen source (a prompt, standard input or the 1Password item), and
+  goes to Cloudflare in a request body and nowhere else;
 - an unknown option or a stray word is refused **without being quoted**, since it may be the value;
   so are a `--name`, `--secret` or `--param` that does not fit the configuration;
 - an error from the Cloudflare API is shown with the value replaced by `[redacted]`, whether the
@@ -105,9 +107,10 @@ secretferry looks for `secretferry.json` in the working directory and then each 
 
 | Field | Meaning |
 | --- | --- |
+| `source` | Where `set` and `rotate` read a value from when `--source` is not given: `prompt` (default), `stdin` or `1password`. `1password` needs `onePassword.vault`. |
 | `cloudflare.accountId` | The 32-character account id. `CLOUDFLARE_ACCOUNT_ID` overrides it. |
 | `cloudflare.scopes` | Which services may bind a new secret. Default `["workers"]`. |
-| `onePassword.vault` | The vault that holds backups. Needed by `provision` and `--from-1password`. |
+| `onePassword.vault` | The vault that holds backups. Needed by `provision` and the `1password` source. |
 | `onePassword.itemTitle` | A secret's item title; `{name}` is the secret's name. Default `secretferry - {name}`. |
 | `secrets[].kind` | The short name `--secret` takes. |
 | `secrets[].name` | A name template such as `acme-{env}-signing-key`. |

@@ -196,3 +196,26 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Errorf("error = %v", err)
 	}
 }
+
+func TestSourceDefaultsToThePromptAndIsChecked(t *testing.T) {
+	cfg, err := Parse([]byte(`{"secrets":[{"kind":"k","name":"n"}]}`), "test.json")
+	if err != nil || cfg.Source != SourcePrompt {
+		t.Fatalf("source = %q, %v", cfg.Source, err)
+	}
+	for _, source := range []string{SourcePrompt, SourceStdin} {
+		if _, err := Parse([]byte(`{"source":"`+source+`","secrets":[{"kind":"k","name":"n"}]}`), "test.json"); err != nil {
+			t.Errorf("source %q: %v", source, err)
+		}
+	}
+
+	if _, err := Parse([]byte(`{"source":"bitwarden","secrets":[{"kind":"k","name":"n"}]}`), "test.json"); err == nil || !strings.Contains(err.Error(), "prompt, stdin, 1password") {
+		t.Errorf("an unknown source: %v", err)
+	}
+	// A source that reads the vault needs a vault, and that is found when the file loads.
+	if _, err := Parse([]byte(`{"source":"1password","secrets":[{"kind":"k","name":"n"}]}`), "test.json"); err == nil || !strings.Contains(err.Error(), "onePassword.vault") {
+		t.Errorf("1password without a vault: %v", err)
+	}
+	if _, err := Parse([]byte(`{"source":"1password","onePassword":{"vault":"V"},"secrets":[{"kind":"k","name":"n"}]}`), "test.json"); err != nil {
+		t.Errorf("1password with a vault: %v", err)
+	}
+}

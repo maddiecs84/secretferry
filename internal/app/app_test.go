@@ -512,12 +512,12 @@ func TestWranglerIsAnOptionalFallbackAndIsSaidAloud(t *testing.T) {
 	}
 }
 
-// ---- --from-1password ----
+// ---- --source and the configured source ----
 
-func TestSetCanReadTheValueFromTheItemTheConfigurationNames(t *testing.T) {
+func TestSourceOnePasswordReadsTheItemTheConfigurationNames(t *testing.T) {
 	h := newHarness(t, testfake.Options{})
 	h.items["secretferry - "+vendorKey] = vendorValue
-	if code := h.run("set", "--name", vendorKey, "--from-1password"); code != 0 {
+	if code := h.run("set", "--name", vendorKey, "--source", "1password"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
 	if got, _ := h.api.Inspect(vendorKey); got.Value != vendorValue {
@@ -529,24 +529,24 @@ func TestSetCanReadTheValueFromTheItemTheConfigurationNames(t *testing.T) {
 	h.assertNeverShown(vendorValue)
 }
 
-func TestFromOnePasswordRefusals(t *testing.T) {
+func TestSourceOnePasswordRefusals(t *testing.T) {
 	t.Run("no such item", func(t *testing.T) {
 		h := newHarness(t, testfake.Options{})
-		if code := h.run("set", "--name", vendorKey, "--from-1password"); code != 1 || !strings.Contains(h.stderr.String(), "no item") {
+		if code := h.run("set", "--name", vendorKey, "--source", "1password"); code != 1 || !strings.Contains(h.stderr.String(), "no item") {
 			t.Errorf("exit %d, stderr %q", code, h.stderr.String())
 		}
 	})
 	t.Run("op not installed", func(t *testing.T) {
 		h := newHarness(t, testfake.Options{})
 		h.opNotInstall = true
-		if code := h.run("set", "--name", vendorKey, "--from-1password"); code != 1 || !strings.Contains(h.stderr.String(), "not installed") {
+		if code := h.run("set", "--name", vendorKey, "--source", "1password"); code != 1 || !strings.Contains(h.stderr.String(), "not installed") {
 			t.Errorf("exit %d, stderr %q", code, h.stderr.String())
 		}
 	})
 	t.Run("the item holds a value the rule rejects", func(t *testing.T) {
 		h := newHarness(t, testfake.Options{})
 		h.items["secretferry - "+vendorKey] = "has a space SECRET"
-		if code := h.run("set", "--name", vendorKey, "--from-1password"); code != 1 || h.posts() != 0 {
+		if code := h.run("set", "--name", vendorKey, "--source", "1password"); code != 1 || h.posts() != 0 {
 			t.Errorf("exit %d, posts %d", code, h.posts())
 		}
 		h.assertNeverShown("SECRET")
@@ -559,7 +559,7 @@ func TestFromOnePasswordRefusals(t *testing.T) {
 			t.Fatal(err)
 		}
 		h := newHarness(t, testfake.Options{})
-		if code := Run([]string{"set", "--name", "acme-k", "--from-1password", "--config", path}, h.env); code != 1 || !strings.Contains(h.stderr.String(), "onePassword.vault") {
+		if code := Run([]string{"set", "--name", "acme-k", "--source", "1password", "--config", path}, h.env); code != 1 || !strings.Contains(h.stderr.String(), "onePassword.vault") {
 			t.Errorf("exit %d, stderr %q", code, h.stderr.String())
 		}
 	})
@@ -761,4 +761,155 @@ func TestAPipedValueReachesTheStoreThroughTheRealReader(t *testing.T) {
 		t.Errorf("stderr = %q", h.stderr.String())
 	}
 	h.assertNeverShown(vendorValue)
+}
+
+// writeConfig writes a small configuration with the given top-level source ("" for none).
+func writeConfig(t *testing.T, source string) string {
+	t.Helper()
+	cfg := map[string]any{
+		"cloudflare":  map[string]any{"accountId": testfake.Account},
+		"onePassword": map[string]any{"vault": "Acme"},
+		"secrets": []any{map[string]any{
+			"kind": "api-key", "name": "acme-api-key", "value": map[string]any{"rule": "printable"},
+		}},
+	}
+	if source != "" {
+		cfg["source"] = source
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "secretferry.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const plainSecret = "acme-api-key"
+
+func TestTheDefaultSourceIsThePromptAndNameItExplicitly(t *testing.T) {
+	for _, args := range [][]string{
+		{"set", "--name", plainSecret},
+		{"set", "--name", plainSecret, "--source", "prompt"},
+	} {
+		h := newHarness(t, testfake.Options{})
+		h.answer = "from-the-prompt"
+		h.items["secretferry - "+plainSecret] = "from-1password"
+		if code := Run(append(args, "--config", writeConfig(t, "")), h.env); code != 0 {
+			t.Fatalf("%v: exit %d: %s", args, code, h.stderr.String())
+		}
+		if got, _ := h.api.Inspect(plainSecret); got.Value != "from-the-prompt" || h.asked != 1 || len(h.opCalls) != 0 {
+			t.Errorf("%v: stored %q, asked %d, op calls %d", args, got.Value, h.asked, len(h.opCalls))
+		}
+	}
+}
+
+func TestTheConfiguredSourceIsUsedWhenNoFlagIsGiven(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	h.answer = "from-the-prompt"
+	h.items["secretferry - "+plainSecret] = "from-1password"
+
+	if code := Run([]string{"set", "--name", plainSecret, "--config", writeConfig(t, "1password")}, h.env); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-1password" || h.asked != 0 {
+		t.Errorf("stored %q, asked %d: the configured source was not used", got.Value, h.asked)
+	}
+}
+
+func TestTheFlagOverridesTheConfiguredSource(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	h.answer = "from-the-prompt"
+	h.items["secretferry - "+plainSecret] = "from-1password"
+
+	if code := Run([]string{"set", "--name", plainSecret, "--source", "prompt", "--config", writeConfig(t, "1password")}, h.env); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-the-prompt" || len(h.opCalls) != 0 {
+		t.Errorf("stored %q with %d op calls: the flag did not win", got.Value, len(h.opCalls))
+	}
+}
+
+func TestSourceStdinReadsStandardInputEvenWhereThePromptWouldBeUsed(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	h.answer = "WRONG-the-prompt-was-used" // ReadValue stands for the prompt
+	h.env.Stdin = strings.NewReader("from-stdin\n")
+
+	if code := Run([]string{"set", "--name", plainSecret, "--source", "stdin", "--config", writeConfig(t, "")}, h.env); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-stdin" || h.asked != 0 {
+		t.Errorf("stored %q, asked %d", got.Value, h.asked)
+	}
+	if !strings.Contains(h.stderr.String(), "standard input until it ends") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+func TestRotateTakesASourceToo(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	h.api.Seed(vendorKey, "old")
+	h.items["secretferry - "+vendorKey] = vendorValue
+	if code := h.run("rotate", "--name", vendorKey, "--confirm", vendorKey, "--source", "1password"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	if got, _ := h.api.Inspect(vendorKey); got.Value != vendorValue {
+		t.Errorf("value = %q", got.Value)
+	}
+}
+
+func TestAnUnknownSourceIsRefusedBeforeAnythingElseWithoutQuotingIt(t *testing.T) {
+	const word = "WORD-THAT-MIGHT-BE-THE-VALUE"
+	h := newHarness(t, testfake.Options{})
+	for _, args := range [][]string{
+		{"set", "--name", signingA, "--source", word},
+		{"set", "--name", signingA, "--source=" + word},
+		{"rotate", "--name", signingA, "--confirm", signingA, "--source", word},
+	} {
+		if code := h.run(args...); code != 1 {
+			t.Fatalf("%v: exit %d", args, code)
+		}
+		if strings.Contains(h.stderr.String(), word) || !strings.Contains(h.stderr.String(), "prompt, stdin, 1password") {
+			t.Errorf("%v: stderr = %q", args, h.stderr.String())
+		}
+	}
+	// The old flag is gone, not aliased.
+	if code := h.run("set", "--name", signingA, "--from-1password"); code != 1 || !strings.Contains(h.stderr.String(), "--source") {
+		t.Errorf("--from-1password: exit %d, stderr %q", code, h.stderr.String())
+	}
+	if len(h.api.Requests()) != 0 || len(h.opCalls) != 0 || h.asked != 0 {
+		t.Error("work started before the source was checked")
+	}
+}
+
+func TestSourceIsGivenOnceAndOnlyToSetAndRotate(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	if code := h.run("set", "--name", signingA, "--source", "prompt", "--source", "stdin"); code != 1 || !strings.Contains(h.stderr.String(), "more than once") {
+		t.Errorf("twice: exit %d, stderr %q", code, h.stderr.String())
+	}
+	for _, command := range []string{"list", "check", "provision"} {
+		args := []string{command, "--source", "1password"}
+		if command == "provision" {
+			args = append(args, "--name", signingA)
+		}
+		if code := h.run(args...); code != 1 || !strings.Contains(h.stderr.String(), "Only --") {
+			t.Errorf("%s: exit %d, stderr %q", command, code, h.stderr.String())
+		}
+	}
+}
+
+func TestProvisionLeavesANoteThatNamesTheRealFlag(t *testing.T) {
+	h := newHarness(t, testfake.Options{})
+	h.run("provision", "--name", signingA)
+	var notes string
+	for _, stdin := range h.opStdin {
+		if strings.Contains(stdin, "notesPlain") {
+			notes = stdin
+		}
+	}
+	if !strings.Contains(notes, "secretferry set --name "+signingA+" --source 1password") || strings.Contains(notes, "--from-1password") {
+		t.Errorf("the item's note = %s", notes)
+	}
 }

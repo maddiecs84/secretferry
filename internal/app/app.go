@@ -66,8 +66,8 @@ const usage = `secretferry moves a secret from where it is kept (1Password) to w
 error message.
 
 Usage:
-  secretferry set       (--name <name> | --secret <kind> [--param k=v ...]) [--from-1password]
-  secretferry rotate    (--name <name> | --secret <kind> [--param k=v ...]) --confirm <name> [--from-1password]
+  secretferry set       (--name <name> | --secret <kind> [--param k=v ...]) [--source <source>]
+  secretferry rotate    (--name <name> | --secret <kind> [--param k=v ...]) --confirm <name> [--source <source>]
   secretferry list
   secretferry check
   secretferry provision (--name <name>... | --secret <kind> [--param k=v ...])
@@ -75,9 +75,10 @@ Usage:
 
 Every command also takes --config <file> (default: the nearest secretferry.json).
 
-A name is whatever the configuration's name templates produce. The value is read from a
-prompt (typed or pasted, shown nowhere) or from standard input, or with --from-1password
-from the item the configuration names. Cloudflare never shows a stored value again, so make
+A name is whatever the configuration's name templates produce. --source says where set and
+rotate read the value from: prompt (the default: typed or pasted and shown nowhere on a
+terminal, else standard input), stdin (standard input to the end, even on a terminal) or
+1password (the item the configuration names). The configuration's "source" sets a default. Cloudflare never shows a stored value again, so make
 your copy BEFORE the value is set; provision does that for you: it makes the key, saves it
 in 1Password, checks it reads back, and only then sets it.
 
@@ -230,9 +231,18 @@ func resolveNames(cfg *config.Config, opts *options, command string) ([]string, 
 	return kind.Names(opts.params)
 }
 
-// obtain returns the value to write: from 1Password when asked, else the prompt or standard input.
+// chooseSource is the --source flag, else the configuration's source, else the prompt.
+func chooseSource(cfg *config.Config, opts *options) string {
+	if opts.source != "" {
+		return opts.source
+	}
+	return cfg.Source
+}
+
+// obtain returns the value to write, from the source the command line or configuration chose.
 func obtain(env Env, cfg *config.Config, opts *options, name string) (string, error) {
-	if opts.from1Password {
+	switch chooseSource(cfg, opts) {
+	case config.SourceOnePassword:
 		vault, err := vaultClient(env, cfg)
 		if err != nil {
 			return "", err
@@ -246,8 +256,11 @@ func obtain(env Env, cfg *config.Config, opts *options, name string) (string, er
 			return "", ferry.Errorf("1Password has no item '%s' in the %s vault, or `op` is not signed in.", title, vault.Vault)
 		}
 		return password, nil
+	case config.SourceStdin:
+		return prompt.ReadStdin(env.Stdin, env.Stderr)
+	default:
+		return readValue(env, fmt.Sprintf("Value for %s (typed characters are not shown): ", name))
 	}
-	return readValue(env, fmt.Sprintf("Value for %s (typed characters are not shown): ", name))
 }
 
 func runSet(ctx context.Context, env Env, cfg *config.Config, opts *options) ([]string, error) {
@@ -399,7 +412,7 @@ func runProvision(ctx context.Context, env Env, cfg *config.Config, opts *option
 			if v, err = value.Generate(kind.Generate, env.Random); err != nil {
 				return lines, err
 			}
-			notes := fmt.Sprintf("secretferry set --name %s --from-1password", name)
+			notes := fmt.Sprintf("secretferry set --name %s --source 1password", name)
 			if err := vault.Create(title, v, notes); err != nil {
 				return lines, err
 			}
@@ -432,17 +445,17 @@ func runProvision(ctx context.Context, env Env, cfg *config.Config, opts *option
 // ---- options ----
 
 type options struct {
-	config        string
-	names         []string
-	secret        string
-	params        map[string][]string
-	confirm       string
-	from1Password bool
+	config  string
+	names   []string
+	secret  string
+	params  map[string][]string
+	confirm string
+	source  string
 }
 
 var commandFlags = map[string][]string{
-	"set":       {"config", "name", "secret", "param", "from-1password"},
-	"rotate":    {"config", "name", "secret", "param", "from-1password", "confirm"},
+	"set":       {"config", "name", "secret", "param", "source"},
+	"rotate":    {"config", "name", "secret", "param", "source", "confirm"},
 	"list":      {"config"},
 	"check":     {"config"},
 	"provision": {"config", "name", "secret", "param"},
@@ -467,8 +480,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		}
 		return false
 	}
-	var names, params, configs, secrets, confirms listFlag
-	var from1p bool
+	var names, params, configs, secrets, confirms, sources listFlag
 	if has("config") {
 		set.Var(&configs, "config", "")
 	}
@@ -484,8 +496,8 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	if has("confirm") {
 		set.Var(&confirms, "confirm", "")
 	}
-	if has("from-1password") {
-		set.BoolVar(&from1p, "from-1password", false, "")
+	if has("source") {
+		set.Var(&sources, "source", "")
 	}
 
 	if err := set.Parse(args); err != nil {
@@ -498,7 +510,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		return nil, ferry.Errorf("Unexpected word. %s", valueHint)
 	}
 
-	opts := &options{from1Password: from1p, params: map[string][]string{}}
+	opts := &options{params: map[string][]string{}}
 	once := func(flagName string, l listFlag) (string, error) {
 		if len(l.values) > 1 {
 			return "", ferry.Errorf("--%s was given more than once.", flagName)
@@ -517,6 +529,13 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	}
 	if opts.confirm, err = once("confirm", confirms); err != nil {
 		return nil, err
+	}
+	if opts.source, err = once("source", sources); err != nil {
+		return nil, err
+	}
+	// Not quoted, like every word the user typed that is not yet known to be one of ours.
+	if opts.source != "" && !config.ValidSource(opts.source) {
+		return nil, ferry.Errorf("That is not a source; the sources are %s.", strings.Join(config.Sources, ", "))
 	}
 	opts.names = names.values
 	if command != "provision" && len(names.values) > 1 {

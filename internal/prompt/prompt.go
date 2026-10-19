@@ -30,17 +30,23 @@ type Terminal interface {
 func ReadValue(promptText string, in io.Reader, out io.Writer) (string, error) {
 	file, isFile := in.(Terminal)
 	if !isFile || !term.IsTerminal(int(file.Fd())) {
-		_, _ = io.WriteString(out, "Reading the value from standard input until it ends.\n")
-		raw, err := io.ReadAll(in)
-		if err != nil {
-			return "", ErrNoValue
-		}
-		return string(raw), nil
+		return ReadStdin(in, out)
 	}
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt)
 	defer signal.Stop(interrupts)
 	return readHidden(int(file.Fd()), promptText, out, realTerminal, interrupts)
+}
+
+// ReadStdin returns standard input to the end, after a line on out saying so,
+// whether or not it is a terminal: it is what `--source stdin` asks for.
+func ReadStdin(in io.Reader, out io.Writer) (string, error) {
+	_, _ = io.WriteString(out, "Reading the value from standard input until it ends.\n")
+	raw, err := io.ReadAll(in)
+	if err != nil {
+		return "", ErrNoValue
+	}
+	return string(raw), nil
 }
 
 // terminal is the part of golang.org/x/term the prompt uses, so a test can stand in for a tty.
