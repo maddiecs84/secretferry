@@ -34,6 +34,19 @@ jobs:
         with:
           version: v2.5.0
 
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck install.sh
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+
   # The tool is one binary per platform, so each target must keep building.
   build:
     runs-on: ubuntu-latest

@@ -20,17 +20,42 @@ account or a real 1Password vault**: try it on a throwaway secret in a sandbox a
 
 ## Install
 
+Linux and macOS:
+
 ```sh
-go install github.com/maddiecs84/secretferry/cmd/secretferry@latest
+curl -fsSL https://github.com/maddiecs84/secretferry/releases/latest/download/install.sh | sh
 ```
 
-Or download a prebuilt binary for Linux, macOS or Windows (amd64 and arm64) from the
-[releases page](https://github.com/maddiecs84/secretferry/releases); each release lists
-`checksums.txt` to check it against. `secretferry version` says which one you have.
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/maddiecs84/secretferry/releases/latest/download/install.ps1 | iex
+```
+
+Each downloads the latest release for your platform (amd64 or arm64), checks it against the
+release's `checksums.txt`, and installs it without needing administrator rights: to
+`~/.local/bin` on Linux and macOS, and to `%LOCALAPPDATA%\Programs\secretferry` on Windows
+(which it adds to your user `PATH`). They tell you if the directory is not on your `PATH`.
+
+To choose a version or a directory:
+
+```sh
+curl -fsSL https://github.com/maddiecs84/secretferry/releases/latest/download/install.sh | SECRETFERRY_INSTALL_DIR=/usr/local/bin sh -s -- v0.1.0
+```
+
+```powershell
+Invoke-WebRequest https://github.com/maddiecs84/secretferry/releases/latest/download/install.ps1 -OutFile install.ps1
+.\install.ps1 -Version v0.1.0 -InstallDir C:\tools   # add -NoPath to leave your PATH alone
+```
+
+Or `go install github.com/maddiecs84/secretferry/cmd/secretferry@latest`, or download an archive
+from the [releases page](https://github.com/maddiecs84/secretferry/releases) and check it
+against `checksums.txt` yourself. `secretferry version` says which one you have.
 
 Releases are made by hand: from the Actions tab, run **Release** on `main` with a version such
-as `v0.1.0`. It tests the commit, builds every platform, tags it and publishes the release with
-generated notes (the pull requests merged since the last release).
+as `v0.1.0`. It tests the commit, builds every platform, tags it, publishes the release with
+generated notes (the pull requests merged since the last release), and then installs it on
+Linux, macOS and Windows with the published scripts as a check.
 
 You also need:
 
