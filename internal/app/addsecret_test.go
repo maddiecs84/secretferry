@@ -253,7 +253,7 @@ func TestARefusedAddLeavesTheFileExactlyAsItWas(t *testing.T) {
 func TestAddSecretLeavesNoTemporaryFileAndKeepsThePermissions(t *testing.T) {
 	h, path := initialised(t)
 	if runtime.GOOS != "windows" {
-		if err := os.Chmod(path, 0o640); err != nil {
+		if err := os.Chmod(path, 0o640); err != nil { //nolint:gosec // the test needs a mode other than init's default to see it kept
 			t.Fatal(err)
 		}
 	}
