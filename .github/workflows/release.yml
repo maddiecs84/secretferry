@@ -1,0 +1,148 @@
+name: Release
+
+# Run by hand from the Actions tab, on main. It tests the commit, builds a binary for
+# each platform, tags the commit with the version you give and publishes a GitHub
+# release with the binaries, their checksums and generated release notes.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, such as v0.1.0 (vMAJOR.MINOR.PATCH, or with a -rc.1 style suffix)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only from main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "Releases are made from main; this run is on $REF." >&2
+            exit 1
+          fi
+      - name: The version is well formed
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+            echo "The version must look like v1.2.3 or v1.2.3-rc.1." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag is new
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "$VERSION already exists; pick a new version." >&2
+            exit 1
+          fi
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and package
+        env:
+          CGO_ENABLED: "0"
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          os="${TARGET%/*}"
+          arch="${TARGET#*/}"
+          name="secretferry_${VERSION}_${os}_${arch}"
+          exe=secretferry
+          if [ "$os" = windows ]; then exe=secretferry.exe; fi
+          mkdir -p "dist/$name"
+          GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "dist/$name/$exe" ./cmd/secretferry
+          cp LICENSE README.md "dist/$name/"
+          cd dist
+          if [ "$os" = windows ]; then
+            zip -qr "$name.zip" "$name"
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secretferry-${{ strategy.job-index }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: secretferry-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum secretferry_* > checksums.txt
+      - name: Write the notes' header
+        env:
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "## Install"
+            echo
+            echo "Download the archive for your platform below, unpack it and put \`secretferry\` on your \`PATH\`."
+            echo "Check it against \`checksums.txt\` (\`sha256sum -c checksums.txt --ignore-missing\`), or build it yourself:"
+            echo
+            echo '```sh'
+            echo "go install github.com/${REPO}/cmd/secretferry@${VERSION}"
+            echo '```'
+            echo
+          } > header.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          SHA: ${{ github.sha }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --title "$VERSION" \
+            --notes-file header.md \
+            --generate-notes \
+            "${flags[@]}"

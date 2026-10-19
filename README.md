@@ -24,7 +24,13 @@ account or a real 1Password vault**: try it on a throwaway secret in a sandbox a
 go install github.com/maddiecs84/secretferry/cmd/secretferry@latest
 ```
 
-Prebuilt binaries are not published yet. It builds for Linux, macOS and Windows (amd64 and arm64).
+Or download a prebuilt binary for Linux, macOS or Windows (amd64 and arm64) from the
+[releases page](https://github.com/maddiecs84/secretferry/releases); each release lists
+`checksums.txt` to check it against. `secretferry version` says which one you have.
+
+Releases are made by hand: from the Actions tab, run **Release** on `main` with a version such
+as `v0.1.0`. It tests the commit, builds every platform, tags it and publishes the release with
+generated notes (the pull requests merged since the last release).
 
 You also need:
 
