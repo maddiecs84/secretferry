@@ -394,3 +394,11 @@ func TestAFailedReplaceLeavesNoTemporaryFile(t *testing.T) {
 		t.Errorf("the directory holds %v, want only the original", names)
 	}
 }
+
+// writeFile replaces a file's contents in a test.
+func writeFile(t *testing.T, path, text string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

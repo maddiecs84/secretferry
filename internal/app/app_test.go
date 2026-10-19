@@ -38,9 +38,10 @@ type harness struct {
 	opCalls       [][]string
 	opStdin       []string
 
-	// What the prompt answers, and how many times it was asked.
-	answer string
-	asked  int
+	// What the prompt answers, how many times it was asked, and what it said last.
+	answer     string
+	asked      int
+	lastPrompt string
 
 	envVars map[string]string
 }
@@ -64,7 +65,7 @@ func newHarness(t *testing.T, opts testfake.Options) *harness {
 		BaseURL:       h.api.URL(),
 		OP:            h.op,
 		WranglerToken: func() (string, error) { return "", errors.New("no wrangler") },
-		ReadValue:     func(string) (string, error) { h.asked++; return h.answer, nil },
+		ReadValue:     func(p string) (string, error) { h.asked++; h.lastPrompt = p; return h.answer, nil },
 		Random:        &counting{},
 		Version:       "test",
 	}

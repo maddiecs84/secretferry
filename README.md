@@ -161,12 +161,33 @@ secretferry set --name acme-sandbox-01-signing-key
 secretferry set --name acme-sandbox-01-signing-key < key.txt
 secretferry set --secret signing-key --param env=sandbox-01 --source 1password
 
+# Or have secretferry make the value, if you give none. A blank answer, blank standard input, or (with
+# --source 1password) no item yet all count as "none given":
+secretferry set --name acme-sandbox-01-signing-key --auto-generate
+
 # Replace a value for good. The name is typed twice so a recalled command line does not do it.
 secretferry rotate --name acme-sandbox-01-signing-key --confirm acme-sandbox-01-signing-key
 
 secretferry list     # names only, sorted
 secretferry check    # secrets in the store that no name template in your config produces
 ```
+
+### `set --auto-generate`
+
+With `--auto-generate`, `set` makes the value itself when none is given, in the form the secret's
+`generate` setting names. Because Cloudflare never shows a value again, it does what `provision`
+does: it saves the value as a 1Password item and **reads it back before Cloudflare is written to**, so
+that item is the copy. Details:
+
+- "None given" means a blank answer at the prompt (the prompt says "Enter to have secretferry make
+  one" when it can), blank standard input, or, with `--source 1password`, no item yet.
+- A value that **is** given is used as it is or refused if the secret's rule rejects it. It is never
+  replaced by a made one, so a mistyped key is an error, not a surprise.
+- If the secret's 1Password item already exists (an earlier run made it), that value is used, not a
+  new one. The output says which happened.
+- It needs `onePassword.vault` in the configuration, and the secret needs a `generate` form (a key
+  someone else issues cannot be made); otherwise it says so and writes nothing.
+- It is a flag of `set` only. `provision` already makes values, for every environment at once.
 
 What the configuration checks when it loads, whichever command you run (and so what `add-secret`
 refuses to write): a `generate` form that

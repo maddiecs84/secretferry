@@ -72,7 +72,7 @@ const usage = `secretferry moves a secret from where it is kept (1Password) to w
 error message.
 
 Usage:
-  secretferry set       (--name <name> | --secret <kind> [--param k=v ...]) [--source <source>]
+  secretferry set       (--name <name> | --secret <kind> [--param k=v ...]) [--source <source>] [--auto-generate]
   secretferry rotate    (--name <name> | --secret <kind> [--param k=v ...]) --confirm <name> [--source <source>]
   secretferry list
   secretferry check
@@ -93,7 +93,10 @@ valid, and validate checks the file and shows what it means.
 A name is whatever the configuration's name templates produce. --source says where set and
 rotate read the value from: prompt (the default: typed or pasted and shown nowhere on a
 terminal, else standard input), stdin (standard input to the end, even on a terminal) or
-1password (the item the configuration names). The configuration's "source" sets a default. Cloudflare never shows a stored value again, so make
+1password (the item the configuration names). The configuration's "source" sets a default.
+With set --auto-generate, a value that is not given (a blank answer, blank standard input, or no
+1Password item yet) is made in the secret's "generate" form, saved in 1Password and read back
+before it is set. A value that is given but wrong is refused, never replaced. Cloudflare never shows a stored value again, so make
 your copy BEFORE the value is set; provision does that for you: it makes the key, saves it
 in 1Password, checks it reads back, and only then sets it.
 
@@ -278,27 +281,96 @@ func chooseSource(cfg *config.Config, opts *options) string {
 }
 
 // obtain returns the value to write, from the source the command line or configuration chose.
-func obtain(env Env, cfg *config.Config, opts *options, name string) (string, error) {
+// absent is set, in place of a value, when the source had none to give: a blank answer or blank
+// standard input, or no 1Password item. It holds the message to show if nothing is made instead.
+func obtain(env Env, cfg *config.Config, opts *options, kind *config.Kind, name string) (raw string, absent error, err error) {
 	switch chooseSource(cfg, opts) {
 	case config.SourceOnePassword:
 		vault, err := vaultClient(env, cfg)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		title := cfg.ItemTitle(name)
 		password, found, err := vault.Get(title)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		if !found {
-			return "", ferry.Errorf("1Password has no item '%s' in the %s vault, or `op` is not signed in.", title, vault.Vault)
+			return "", ferry.Errorf("1Password has no item '%s' in the %s vault, or `op` is not signed in.", title, vault.Vault), nil
 		}
-		return password, nil
+		return blankIsAbsent(password)
 	case config.SourceStdin:
-		return prompt.ReadStdin(env.Stdin, env.Stderr)
+		raw, err := prompt.ReadStdin(env.Stdin, env.Stderr)
+		if err != nil {
+			return "", nil, err
+		}
+		return blankIsAbsent(raw)
 	default:
-		return readValue(env, fmt.Sprintf("Value for %s (typed characters are not shown): ", name))
+		hint := ""
+		if opts.autoGenerate && kind.Generate != "" && cfg.OnePassword.Vault != "" {
+			hint = "; Enter to have secretferry make one"
+		}
+		raw, err := readValue(env, fmt.Sprintf("Value for %s (typed characters are not shown%s): ", name, hint))
+		if err != nil {
+			return "", nil, err
+		}
+		return blankIsAbsent(raw)
 	}
+}
+
+// blankIsAbsent says a value that is only whitespace was not given.
+func blankIsAbsent(raw string) (string, error, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", ferry.Errorf("The value is empty."), nil
+	}
+	return raw, nil, nil
+}
+
+// backup is what finding or making a secret's 1Password copy came to.
+type backup struct {
+	value   string
+	existed bool // the item was already there
+	created bool // this run made the value and saved the item
+}
+
+// backedUpValue returns the value the secret's 1Password item holds. If there is no item, it makes
+// a value in the kind's generate form and saves it as one. Either way it reads the item back and
+// stops unless the copy matches, and refuses a value the kind's rule rejects, so what the caller
+// goes on to send to Cloudflare, which never shows it again, has a copy that is known to read back.
+// label, if any, begins the messages.
+func backedUpValue(env Env, cfg *config.Config, vault *onepassword.Client, kind *config.Kind, name, label string) (backup, error) {
+	prefix := ""
+	if label != "" {
+		prefix = label + " "
+	}
+	title := cfg.ItemTitle(name)
+
+	v, found, err := vault.Get(title)
+	if err != nil {
+		return backup{}, err
+	}
+	b := backup{value: v, existed: found}
+	if !found {
+		if kind.Generate == "" {
+			return b, ferry.Errorf("%s1Password has no item '%s', and %q has no \"generate\" in the configuration, so there is nothing to make.", prefix, title, kind.Kind)
+		}
+		if b.value, err = value.Generate(kind.Generate, env.Random); err != nil {
+			return b, err
+		}
+		notes := fmt.Sprintf("secretferry set --name %s --source 1password", name)
+		if err := vault.Create(title, b.value, notes); err != nil {
+			return b, err
+		}
+		b.created = true
+	}
+
+	if back, _, err := vault.Get(title); err != nil || back != b.value {
+		return b, ferry.Errorf("%sThe 1Password copy does not match; stopped before Cloudflare.", prefix)
+	}
+	if err := kind.Rule.Check(b.value); err != nil {
+		return b, ferry.Errorf("%sThe value in 1Password is not acceptable for %s: %v", prefix, name, err)
+	}
+	return b, nil
 }
 
 func runSet(ctx context.Context, env Env, cfg *config.Config, opts *options) ([]string, error) {
@@ -316,16 +388,62 @@ func runSet(ctx context.Context, env Env, cfg *config.Config, opts *options) ([]
 	} else if exists {
 		return nil, ferry.Errorf("%s is already set. To replace its value, use rotate.", name)
 	}
-	v, err := finalValue(env, cfg, opts, kind, name)
+
+	raw, absent, err := obtain(env, cfg, opts, kind, name)
 	if err != nil {
 		return nil, err
+	}
+	var v string
+	var lines []string
+	switch {
+	case absent == nil:
+		// A value was given. It is used as it is or refused: never replaced by a made one.
+		if v, err = checkedValue(raw, kind); err != nil {
+			return nil, err
+		}
+		lines = []string{
+			fmt.Sprintf("Set %s.", name),
+			"Cloudflare does not show a value again, to anyone, so the only copy is the one you made before this ran (a password manager, or the file it was read from).",
+		}
+	case !opts.autoGenerate:
+		return nil, absent
+	default:
+		if v, lines, err = autoGenerated(env, cfg, kind, name); err != nil {
+			return nil, err
+		}
 	}
 	if err := store.Create(ctx, name, v); err != nil {
 		return nil, err
 	}
-	return []string{
+	return lines, nil
+}
+
+// autoGenerated is the value for a secret that was given none: whatever its 1Password item already
+// holds, or a value made in the kind's generate form and saved as that item first. The lines
+// say which, and that the item is now the copy.
+func autoGenerated(env Env, cfg *config.Config, kind *config.Kind, name string) (string, []string, error) {
+	if cfg.OnePassword.Vault == "" {
+		return "", nil, ferry.Errorf("--auto-generate saves the value it makes in 1Password before setting it, so onePassword.vault must be set in %s.", cfg.Path)
+	}
+	vault, err := vaultClient(env, cfg)
+	if err != nil {
+		return "", nil, err
+	}
+	b, err := backedUpValue(env, cfg, vault, kind, name, "")
+	if err != nil {
+		return "", nil, err
+	}
+	title := cfg.ItemTitle(name)
+	var made string
+	if b.created {
+		made = fmt.Sprintf("Made the value (%s) and saved it as '%s' in the %s vault, then read it back.", kind.Generate, title, vault.Vault)
+	} else {
+		made = fmt.Sprintf("No value was given, so it used the one already saved as '%s' in the %s vault.", title, vault.Vault)
+	}
+	return b.value, []string{
+		made,
 		fmt.Sprintf("Set %s.", name),
-		"Cloudflare does not show a value again, to anyone, so the only copy is the one you made before this ran (a password manager, or the file it was read from).",
+		"Cloudflare does not show a value again, to anyone, so that 1Password item is the copy.",
 	}, nil
 }
 
@@ -365,10 +483,18 @@ func runRotate(ctx context.Context, env Env, cfg *config.Config, opts *options) 
 }
 
 func finalValue(env Env, cfg *config.Config, opts *options, kind *config.Kind, name string) (string, error) {
-	raw, err := obtain(env, cfg, opts, name)
+	raw, absent, err := obtain(env, cfg, opts, kind, name)
 	if err != nil {
 		return "", err
 	}
+	if absent != nil {
+		return "", absent
+	}
+	return checkedValue(raw, kind)
+}
+
+// checkedValue is a value as given, once it is known to fit the store and the kind's rule.
+func checkedValue(raw string, kind *config.Kind) (string, error) {
 	v, err := value.Normalise(raw, cloudflare.MaxSecretBytes)
 	if err != nil {
 		return "", err
@@ -439,32 +565,17 @@ func runProvision(ctx context.Context, env Env, cfg *config.Config, opts *option
 		label := "[" + name + "]"
 		title := cfg.ItemTitle(name)
 
-		v, found, err := vault.Get(title)
+		b, err := backedUpValue(env, cfg, vault, kind, name, label)
+		switch {
+		case b.created:
+			lines = append(lines, fmt.Sprintf("%s saved '%s' in the %s vault.", label, title, vault.Vault))
+		case b.existed:
+			lines = append(lines, fmt.Sprintf("%s 1Password already has '%s'; using that value.", label, title))
+		}
 		if err != nil {
 			return lines, err
 		}
-		if !found {
-			if kind.Generate == "" {
-				return lines, ferry.Errorf("%s 1Password has no item '%s', and %q has no \"generate\" in the configuration, so there is nothing to make.", label, title, kind.Kind)
-			}
-			if v, err = value.Generate(kind.Generate, env.Random); err != nil {
-				return lines, err
-			}
-			notes := fmt.Sprintf("secretferry set --name %s --source 1password", name)
-			if err := vault.Create(title, v, notes); err != nil {
-				return lines, err
-			}
-			lines = append(lines, fmt.Sprintf("%s saved '%s' in the %s vault.", label, title, vault.Vault))
-		} else {
-			lines = append(lines, fmt.Sprintf("%s 1Password already has '%s'; using that value.", label, title))
-		}
-
-		if back, _, err := vault.Get(title); err != nil || back != v {
-			return lines, ferry.Errorf("%s The 1Password copy does not match; stopped before Cloudflare.", label)
-		}
-		if err := kind.Rule.Check(v); err != nil {
-			return lines, ferry.Errorf("%s The value in 1Password is not acceptable for %s: %v", label, name, err)
-		}
+		v := b.value
 
 		if _, exists, err := store.Lookup(ctx, name); err != nil {
 			return lines, err
@@ -492,6 +603,9 @@ type options struct {
 	account string
 	vault   string
 
+	// set
+	autoGenerate bool
+
 	// config add-secret
 	kind          string
 	template      string
@@ -504,7 +618,7 @@ type options struct {
 }
 
 var commandFlags = map[string][]string{
-	"set":       {"config", "name", "secret", "param", "source"},
+	"set":       {"config", "name", "secret", "param", "source", "auto-generate"},
 	"rotate":    {"config", "name", "secret", "param", "source", "confirm"},
 	"list":      {"config"},
 	"check":     {"config"},
@@ -538,6 +652,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	}
 	var names, params, configs, secrets, confirms, sources, accounts, vaults listFlag
 	var kinds, templates, patterns, rules, messages, generates, defaults, warnings listFlag
+	var autoGenerate bool
 	if has("config") {
 		set.Var(&configs, "config", "")
 	}
@@ -555,6 +670,9 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	}
 	if has("source") {
 		set.Var(&sources, "source", "")
+	}
+	if has("auto-generate") {
+		set.BoolVar(&autoGenerate, "auto-generate", false, "")
 	}
 	if has("account") {
 		set.Var(&accounts, "account", "")
@@ -581,7 +699,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		return nil, ferry.Errorf("Unexpected word. %s", valueHint)
 	}
 
-	opts := &options{params: map[string][]string{}}
+	opts := &options{params: map[string][]string{}, autoGenerate: autoGenerate}
 	once := func(flagName string, l listFlag) (string, error) {
 		if len(l.values) > 1 {
 			return "", ferry.Errorf("--%s was given more than once.", flagName)
