@@ -81,6 +81,16 @@ func Compile(source string, params map[string]string) (*Template, error) {
 	return t, nil
 }
 
+// Placeholders lists the placeholder names a template source uses, in order of
+// appearance, without compiling it.
+func Placeholders(source string) []string {
+	var names []string
+	for _, m := range placeholder.FindAllStringSubmatch(source, -1) {
+		names = append(names, m[1])
+	}
+	return names
+}
+
 // Source is the template as written.
 func (t *Template) Source() string { return t.source }
 

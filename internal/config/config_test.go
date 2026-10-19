@@ -143,7 +143,6 @@ func TestValidationRefusals(t *testing.T) {
 		"unknown field":       {`{"secrets":[],"surprise":1}`, "surprise"},
 		"not json":            {`{`, "not valid"},
 		"two documents":       {`{"secrets":[{"kind":"k","name":"n"}]} {}`, "more than one"},
-		"no secrets":          {`{"secrets":[]}`, "no secrets"},
 		"bad account":         {`{"cloudflare":{"accountId":"nope"},"secrets":[{"kind":"k","name":"n"}]}`, "accountId"},
 		"title no name":       {`{"onePassword":{"itemTitle":"fixed"},"secrets":[{"kind":"k","name":"n"}]}`, "{name}"},
 		"title two names":     {`{"onePassword":{"itemTitle":"{name}{name}"},"secrets":[{"kind":"k","name":"n"}]}`, "exactly once"},
@@ -290,5 +289,27 @@ func TestMissingDefaultsAndAccountIDs(t *testing.T) {
 	}
 	if !ValidAccountID(strings.Repeat("a", 32)) || ValidAccountID("A"+strings.Repeat("a", 31)) || ValidAccountID("short") || ValidAccountID("") {
 		t.Error("ValidAccountID accepts or refuses the wrong thing")
+	}
+}
+
+func TestAnEmptyConfigurationIsValid(t *testing.T) {
+	for _, text := range []string{`{}`, `{"secrets":[]}`} {
+		cfg, err := Parse([]byte(text), "test.json")
+		if err != nil || len(cfg.Kinds) != 0 {
+			t.Errorf("%s: %v, %d kinds", text, err, len(cfg.Kinds))
+		}
+	}
+}
+
+func TestRawIsTheFileAsWrittenNotAsDefaulted(t *testing.T) {
+	cfg, err := Parse([]byte(`{"secrets":[{"kind":"k","name":"n"}]}`), "test.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Source != SourcePrompt || cfg.OnePassword.ItemTitle != DefaultItemTitle || len(cfg.Cloudflare.Scopes) != 1 {
+		t.Fatalf("the working copy lacks its defaults: %+v", cfg.File)
+	}
+	if cfg.Raw.Source != "" || cfg.Raw.OnePassword.ItemTitle != "" || cfg.Raw.Cloudflare.Scopes != nil {
+		t.Errorf("Raw picked up defaults the file never said: %+v", cfg.Raw)
 	}
 }

@@ -71,13 +71,17 @@ Usage:
   secretferry list
   secretferry check
   secretferry provision (--name <name>... | --secret <kind> [--param k=v ...])
-  secretferry config validate
   secretferry config init [--account <id>] [--vault <name>]
+  secretferry config add-secret --kind <kind> --template <name-template> --pattern <placeholder>=<regex>...
+                                [--rule <rule>] [--message <text>] [--generate <form>]
+                                [--default <placeholder>=<value>...] [--rotate-warning <text>]
+  secretferry config validate
   secretferry version
 
 Every command also takes --config <file> (default: the nearest secretferry.json). config
-validate and config init need no token, network or 1Password: validate checks the file and
-shows what it means, and init writes a starter file, never over one that is there.
+init, add-secret and validate need no token, network or 1Password: init writes an empty file
+(never over one that is there), add-secret adds a secret to it after checking the result is
+valid, and validate checks the file and shows what it means.
 
 A name is whatever the configuration's name templates produce. --source says where set and
 rotate read the value from: prompt (the default: typed or pasted and shown nowhere on a
@@ -141,6 +145,11 @@ func dispatch(ctx context.Context, args []string, env Env) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if command != "list" {
+		if err := requireSecrets(cfg); err != nil {
+			return nil, err
+		}
+	}
 
 	switch command {
 	case "set":
@@ -156,17 +165,32 @@ func dispatch(ctx context.Context, args []string, env Env) ([]string, error) {
 	}
 }
 
+// configPath is --config, else the nearest secretferry.json.
+func configPath(path string, env Env) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	dir, err := env.Getwd()
+	if err != nil {
+		return "", ferry.Errorf("could not find the working directory")
+	}
+	return config.Find(dir)
+}
+
 func loadConfig(path string, env Env) (*config.Config, error) {
-	if path == "" {
-		dir, err := env.Getwd()
-		if err != nil {
-			return nil, ferry.Errorf("could not find the working directory")
-		}
-		if path, err = config.Find(dir); err != nil {
-			return nil, err
-		}
+	path, err := configPath(path, env)
+	if err != nil {
+		return nil, err
 	}
 	return config.Load(path)
+}
+
+// requireSecrets refuses a command that acts on a declared secret when the file declares none.
+func requireSecrets(cfg *config.Config) error {
+	if len(cfg.Kinds) > 0 {
+		return nil
+	}
+	return ferry.Errorf("%s declares no secrets yet. Add one with `secretferry config add-secret` (see the README).", cfg.Path)
 }
 
 func connect(ctx context.Context, env Env, cfg *config.Config) (*cloudflare.Store, error) {
@@ -460,6 +484,16 @@ type options struct {
 	source  string
 	account string
 	vault   string
+
+	// config add-secret
+	kind          string
+	template      string
+	rule          string
+	message       string
+	generate      string
+	rotateWarning string
+	patterns      []string
+	defaults      []string
 }
 
 var commandFlags = map[string][]string{
@@ -471,6 +505,9 @@ var commandFlags = map[string][]string{
 
 	"config validate": {"config"},
 	"config init":     {"config", "account", "vault"},
+	"config add-secret": {
+		"config", "kind", "template", "pattern", "rule", "message", "generate", "default", "rotate-warning",
+	},
 }
 
 type listFlag struct{ values []string }
@@ -493,6 +530,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		return false
 	}
 	var names, params, configs, secrets, confirms, sources, accounts, vaults listFlag
+	var kinds, templates, patterns, rules, messages, generates, defaults, warnings listFlag
 	if has("config") {
 		set.Var(&configs, "config", "")
 	}
@@ -516,6 +554,14 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	}
 	if has("vault") {
 		set.Var(&vaults, "vault", "")
+	}
+	for flagName, target := range map[string]*listFlag{
+		"kind": &kinds, "template": &templates, "pattern": &patterns, "rule": &rules, "message": &messages,
+		"generate": &generates, "default": &defaults, "rotate-warning": &warnings,
+	} {
+		if has(flagName) {
+			set.Var(target, flagName, "")
+		}
 	}
 
 	if err := set.Parse(args); err != nil {
@@ -557,6 +603,19 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	if opts.vault, err = once("vault", vaults); err != nil {
 		return nil, err
 	}
+	for flagName, dest := range map[string]struct {
+		from listFlag
+		to   *string
+	}{
+		"kind": {kinds, &opts.kind}, "template": {templates, &opts.template}, "rule": {rules, &opts.rule},
+		"message": {messages, &opts.message}, "generate": {generates, &opts.generate},
+		"rotate-warning": {warnings, &opts.rotateWarning},
+	} {
+		if *dest.to, err = once(flagName, dest.from); err != nil {
+			return nil, err
+		}
+	}
+	opts.patterns, opts.defaults = patterns.values, defaults.values
 	// Not quoted, like every word the user typed that is not yet known to be one of ours.
 	if opts.source != "" && !config.ValidSource(opts.source) {
 		return nil, ferry.Errorf("That is not a source; the sources are %s.", strings.Join(config.Sources, ", "))

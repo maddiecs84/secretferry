@@ -112,6 +112,10 @@ type Kind struct {
 // Config is a validated configuration.
 type Config struct {
 	File
+	// Raw is the file as written, before defaults were filled in: what Render turns back into text.
+	// Validation fills defaults into File's own fields and never changes a map or slice in place,
+	// so Raw can share them.
+	Raw   File
 	Path  string
 	Kinds []*Kind
 }
@@ -129,7 +133,7 @@ func Find(dir string) (string, error) {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", ferry.Errorf("no %s found here or in a parent directory; create one (see the README) or pass --config", FileName)
+			return "", ferry.Errorf("no %s found here or in a parent directory; create one with `secretferry config init`, or pass --config", FileName)
 		}
 		dir = parent
 	}
@@ -158,7 +162,7 @@ func Parse(data []byte, path string) (*Config, error) {
 	if decoder.More() {
 		return nil, ferry.Errorf("%s has more than one JSON document", path)
 	}
-	cfg := &Config{File: file, Path: path}
+	cfg := &Config{File: file, Raw: file, Path: path}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -186,9 +190,6 @@ func (c *Config) validate() error {
 	}
 	if len(c.Cloudflare.Scopes) == 0 {
 		c.Cloudflare.Scopes = []string{"workers"}
-	}
-	if len(c.Secrets) == 0 {
-		return ferry.Errorf("%s declares no secrets; add at least one entry to \"secrets\"", c.Path)
 	}
 
 	seen := map[string]bool{}

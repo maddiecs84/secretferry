@@ -73,7 +73,6 @@ func TestValidateRefusesABadFileAndSaysWhy(t *testing.T) {
 	for name, c := range map[string]struct{ json, want string }{
 		"unknown field":      {`{"secrets":[{"kind":"k","name":"n"}],"surprise":1}`, "surprise"},
 		"generate vs rule":   {`{"secrets":[{"kind":"k","name":"n","value":{"rule":"base64-32"},"generate":"base64url-32"}]}`, "does not pass its own value rule"},
-		"no secrets":         {`{"secrets":[]}`, "no secrets"},
 		"1password no vault": {`{"source":"1password","secrets":[{"kind":"k","name":"n"}]}`, "onePassword.vault"},
 	} {
 		if err := os.WriteFile(path, []byte(c.json), 0o600); err != nil {
@@ -134,7 +133,7 @@ func TestValidateFindsTheFileFromTheWorkingDirectory(t *testing.T) {
 
 // ---- init ----
 
-func TestInitWritesAStarterThatValidates(t *testing.T) {
+func TestInitWritesAnEmptyConfigurationThatValidates(t *testing.T) {
 	h, dir := configHarness(t)
 	if code := h.runPlain("config", "init"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
@@ -146,19 +145,25 @@ func TestInitWritesAStarterThatValidates(t *testing.T) {
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		t.Fatalf("the starter is not JSON: %v", err)
+		t.Fatalf("the file is not JSON: %v", err)
+	}
+	if secrets, ok := parsed["secrets"].([]any); !ok || len(secrets) != 0 {
+		t.Errorf("secrets = %v: init must not invent a secret", parsed["secrets"])
 	}
 	if _, ok := parsed["cloudflare"]; ok {
 		t.Error("an account block was written without an account")
 	}
-	for _, want := range []string{"Wrote " + path, "Add cloudflare.accountId", "Add onePassword.vault", "secretferry config validate"} {
+	if strings.Contains(string(raw), "example") || strings.Contains(string(raw), "myapp") {
+		t.Errorf("the file holds an example:\n%s", raw)
+	}
+	for _, want := range []string{"Wrote " + path, "no secrets in it", "Add cloudflare.accountId", "Add onePassword.vault", "secretferry config add-secret"} {
 		if !strings.Contains(h.stdout.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, h.stdout.String())
 		}
 	}
 
-	// What init wrote is accepted by the commands that read it.
-	if code := h.runPlain("config", "validate"); code != 0 || !strings.Contains(h.stdout.String(), "myapp-<env>-example-key") {
+	// What init wrote is accepted by the commands that read it, and says what is missing.
+	if code := h.runPlain("config", "validate"); code != 0 || !strings.Contains(h.stdout.String(), "Secrets: none yet") {
 		t.Errorf("validate: exit %d, stdout %q, stderr %q", code, h.stdout.String(), h.stderr.String())
 	}
 	h.assertNothingLeftTheMachine()

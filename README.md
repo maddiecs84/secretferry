@@ -37,26 +37,35 @@ You also need:
 
 ## Quick start
 
-Every command reads a `secretferry.json`. Make a starter and check it (neither needs a token, the
-network or 1Password):
+Every command reads a `secretferry.json`. Make one, add the secrets it should manage, and check it.
+None of these steps needs a token, the network or 1Password.
 
 ```sh
-secretferry config init --account <your 32-character Cloudflare account id> --vault <your 1Password vault>
+# 1. An empty configuration, with your Cloudflare account and 1Password vault.
+secretferry config init --account 0123456789abcdef0123456789abcdef --vault Acme
+
+# 2. Describe a secret: what it is called, what its value must look like, and how to make it.
+secretferry config add-secret \
+  --kind signing-key \
+  --template 'acme-{env}-signing-key' \
+  --pattern 'env=(sandbox|staging|production)-[0-9]{2}' \
+  --rule base64-32 \
+  --generate base64-32 \
+  --default env=sandbox-01 --default env=staging-01 --default env=production-01 \
+  --rotate-warning 'anything signed with it stops verifying unless the old value was kept.'
+
+# 3. Check it, and see what it means.
 secretferry config validate
 ```
 
-`init` writes one example secret for you to replace, and never overwrites a file that is there.
-`validate` loads the file, which checks every rule in it, and shows what it means: each secret's name
-form, value rule, and the names `provision` would make. It exits 1 with the reason if the file is
-wrong, so it also suits CI. There is no command that edits the file; it is plain JSON, so edit it
-by hand and run `validate`.
-
-Or write one yourself (see [`examples/secretferry.json`](examples/secretferry.json)):
+`init` writes a file with no secrets in it, never over one that is there. Each `add-secret` adds one
+secret to it. Step 2 above makes this file (add `--rule printable` and no `--generate` for a key
+someone else issues, which you supply with `set`):
 
 ```json
 {
   "cloudflare": { "accountId": "0123456789abcdef0123456789abcdef" },
-  "onePassword": { "vault": "Acme", "itemTitle": "secretferry - {name}" },
+  "onePassword": { "vault": "Acme" },
   "secrets": [
     {
       "kind": "signing-key",
@@ -71,7 +80,19 @@ Or write one yourself (see [`examples/secretferry.json`](examples/secretferry.js
 }
 ```
 
-Then:
+`add-secret` checks the whole file with the new secret in it **before** writing, and replaces the
+file in one step, so a refused add (a kind that is taken, a template placeholder with no pattern, a
+`--generate` form its own `--rule` rejects, a name another secret also produces) leaves it exactly as
+it was. It rewrites the file in the layout above; JSON has no comments, so nothing is lost, but hand
+formatting is normalised.
+
+`validate` loads the file, which checks every rule in it, and shows what it means: each secret's name
+form, value rule, and the names `provision` would make. It exits 1 with the reason if the file is
+wrong, so it also suits CI. There is no command that changes or removes a secret: edit the JSON by
+hand and run `validate`. You can also write the file by hand from the start (see
+[`examples/secretferry.json`](examples/secretferry.json)).
+
+Then use it:
 
 ```sh
 export CLOUDFLARE_API_TOKEN=…
@@ -95,7 +116,8 @@ secretferry list     # names only, sorted
 secretferry check    # secrets in the store that no name template in your config produces
 ```
 
-What the configuration checks when it loads, whichever command you run: a `generate` form that
+What the configuration checks when it loads, whichever command you run (and so what `add-secret`
+refuses to write): a `generate` form that
 fails its own `value.rule` (so `provision` could never succeed), two secrets whose templates
 produce the same name (so one would never be the one that checks the value), a `source` of
 `1password` with no vault, and any field it does not recognise.
@@ -122,7 +144,9 @@ that kind of secret loses.
 ## Configuration
 
 secretferry looks for `secretferry.json` in the working directory and then each parent, or you pass
-`--config <file>` to any command. Unknown fields are an error.
+`--config <file>` to any command. Unknown fields are an error. The last column shows the
+`config add-secret` flag that sets a field; `config init` sets `--account` and `--vault`. An empty
+`secrets` list is valid, but every command except `list` needs at least one secret to act on.
 
 | Field | Meaning |
 | --- | --- |
@@ -131,14 +155,14 @@ secretferry looks for `secretferry.json` in the working directory and then each 
 | `cloudflare.scopes` | Which services may bind a new secret. Default `["workers"]`. |
 | `onePassword.vault` | The vault that holds backups. Needed by `provision` and the `1password` source. |
 | `onePassword.itemTitle` | A secret's item title; `{name}` is the secret's name. Default `secretferry - {name}`. |
-| `secrets[].kind` | The short name `--secret` takes. |
-| `secrets[].name` | A name template such as `acme-{env}-signing-key`. |
-| `secrets[].params` | A regular expression for each `{placeholder}`, which a value must match in full. |
-| `secrets[].value.rule` | `any`, `base64-32`, `base64url-32`, `printable` or `regex:<pattern>`. |
-| `secrets[].value.message` | Replaces the default text when the rule fails. Must not contain a value. |
-| `secrets[].generate` | `base64-32` or `base64url-32`: how `provision` makes the key. Leave out for a key someone else issues. |
-| `secrets[].defaults` | The values `provision` uses for a placeholder when `--param` gives none; one secret per combination. |
-| `secrets[].rotateWarning` | What replacing this secret loses, shown when `rotate` is not confirmed. |
+| `secrets[].kind` | The short name `--secret` takes. `add-secret --kind` |
+| `secrets[].name` | A name template such as `acme-{env}-signing-key`. `add-secret --template` |
+| `secrets[].params` | A regular expression for each `{placeholder}`, which a value must match in full. `add-secret --pattern <placeholder>=<regex>`, once for each |
+| `secrets[].value.rule` | `any`, `base64-32`, `base64url-32`, `printable` or `regex:<pattern>`. `add-secret --rule` |
+| `secrets[].value.message` | Replaces the default text when the rule fails. Must not contain a value. `add-secret --message` |
+| `secrets[].generate` | `base64-32` or `base64url-32`: how `provision` makes the key. Leave out for a key someone else issues. `add-secret --generate` |
+| `secrets[].defaults` | The values `provision` uses for a placeholder when `--param` gives none; one secret per combination. `add-secret --default <placeholder>=<value>`, once for each |
+| `secrets[].rotateWarning` | What replacing this secret loses, shown when `rotate` is not confirmed. `add-secret --rotate-warning` |
 
 ### Naming conventions
 
