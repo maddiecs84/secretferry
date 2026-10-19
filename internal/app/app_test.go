@@ -787,20 +787,20 @@ func writeConfig(t *testing.T, source string) string {
 	return path
 }
 
-const plainSecret = "acme-api-key"
+const soloName = "acme-api-key"
 
 func TestTheDefaultSourceIsThePromptAndNameItExplicitly(t *testing.T) {
 	for _, args := range [][]string{
-		{"set", "--name", plainSecret},
-		{"set", "--name", plainSecret, "--source", "prompt"},
+		{"set", "--name", soloName},
+		{"set", "--name", soloName, "--source", "prompt"},
 	} {
 		h := newHarness(t, testfake.Options{})
 		h.answer = "from-the-prompt"
-		h.items["secretferry - "+plainSecret] = "from-1password"
+		h.items["secretferry - "+soloName] = "from-1password"
 		if code := Run(append(args, "--config", writeConfig(t, "")), h.env); code != 0 {
 			t.Fatalf("%v: exit %d: %s", args, code, h.stderr.String())
 		}
-		if got, _ := h.api.Inspect(plainSecret); got.Value != "from-the-prompt" || h.asked != 1 || len(h.opCalls) != 0 {
+		if got, _ := h.api.Inspect(soloName); got.Value != "from-the-prompt" || h.asked != 1 || len(h.opCalls) != 0 {
 			t.Errorf("%v: stored %q, asked %d, op calls %d", args, got.Value, h.asked, len(h.opCalls))
 		}
 	}
@@ -809,12 +809,12 @@ func TestTheDefaultSourceIsThePromptAndNameItExplicitly(t *testing.T) {
 func TestTheConfiguredSourceIsUsedWhenNoFlagIsGiven(t *testing.T) {
 	h := newHarness(t, testfake.Options{})
 	h.answer = "from-the-prompt"
-	h.items["secretferry - "+plainSecret] = "from-1password"
+	h.items["secretferry - "+soloName] = "from-1password"
 
-	if code := Run([]string{"set", "--name", plainSecret, "--config", writeConfig(t, "1password")}, h.env); code != 0 {
+	if code := Run([]string{"set", "--name", soloName, "--config", writeConfig(t, "1password")}, h.env); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-1password" || h.asked != 0 {
+	if got, _ := h.api.Inspect(soloName); got.Value != "from-1password" || h.asked != 0 {
 		t.Errorf("stored %q, asked %d: the configured source was not used", got.Value, h.asked)
 	}
 }
@@ -822,12 +822,12 @@ func TestTheConfiguredSourceIsUsedWhenNoFlagIsGiven(t *testing.T) {
 func TestTheFlagOverridesTheConfiguredSource(t *testing.T) {
 	h := newHarness(t, testfake.Options{})
 	h.answer = "from-the-prompt"
-	h.items["secretferry - "+plainSecret] = "from-1password"
+	h.items["secretferry - "+soloName] = "from-1password"
 
-	if code := Run([]string{"set", "--name", plainSecret, "--source", "prompt", "--config", writeConfig(t, "1password")}, h.env); code != 0 {
+	if code := Run([]string{"set", "--name", soloName, "--source", "prompt", "--config", writeConfig(t, "1password")}, h.env); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-the-prompt" || len(h.opCalls) != 0 {
+	if got, _ := h.api.Inspect(soloName); got.Value != "from-the-prompt" || len(h.opCalls) != 0 {
 		t.Errorf("stored %q with %d op calls: the flag did not win", got.Value, len(h.opCalls))
 	}
 }
@@ -837,10 +837,10 @@ func TestSourceStdinReadsStandardInputEvenWhereThePromptWouldBeUsed(t *testing.T
 	h.answer = "WRONG-the-prompt-was-used" // ReadValue stands for the prompt
 	h.env.Stdin = strings.NewReader("from-stdin\n")
 
-	if code := Run([]string{"set", "--name", plainSecret, "--source", "stdin", "--config", writeConfig(t, "")}, h.env); code != 0 {
+	if code := Run([]string{"set", "--name", soloName, "--source", "stdin", "--config", writeConfig(t, "")}, h.env); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
-	if got, _ := h.api.Inspect(plainSecret); got.Value != "from-stdin" || h.asked != 0 {
+	if got, _ := h.api.Inspect(soloName); got.Value != "from-stdin" || h.asked != 0 {
 		t.Errorf("stored %q, asked %d", got.Value, h.asked)
 	}
 	if !strings.Contains(h.stderr.String(), "standard input until it ends") {
