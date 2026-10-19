@@ -45,6 +45,7 @@ None of these steps needs a token, the network or 1Password.
 secretferry config init --account 0123456789abcdef0123456789abcdef --vault Acme
 
 # 2. Describe a secret: what it is called, what its value must look like, and how to make it.
+#    (This is the scriptable form. Without any flags, in a terminal, it asks instead: see below.)
 secretferry config add-secret \
   --kind signing-key \
   --template 'acme-{env}-signing-key' \
@@ -59,7 +60,58 @@ secretferry config validate
 ```
 
 `init` writes a file with no secrets in it, never over one that is there. Each `add-secret` adds one
-secret to it. Step 2 above makes this file (add `--rule printable` and no `--generate` for a key
+secret to it.
+
+### Let it ask
+
+Run `add-secret` with no arguments **in a terminal** and it asks one question at a time, offering a
+default for each (press Enter to accept it). Nothing is written until you confirm at the end, and
+Ctrl-C stops it:
+
+```text
+$ secretferry config add-secret
+Adding a secret to /work/acme/secretferry.json. Press Enter to accept a default shown in [brackets]; Ctrl-C to stop.
+
+Kind: a short name for this secret, such as signing-key [api-key]: signing-key
+
+Name template [acme-{env}-signing-key]:
+Pattern for {env} [(sandbox|staging|production)-[0-9]{2}]:
+
+Who makes the value?
+  1. secretferry makes it: 32 random bytes as padded base64
+  2. secretferry makes it: 32 random bytes as base64url (no padding)
+  3. someone else issues it, and you supply it with `set`
+Choice [1]:
+Values for {env} [sandbox-01,staging-01,production-01]:
+What does replacing it lose? One sentence, shown when someone rotates it (Enter for the standard warning):
+
+This will add to /work/acme/secretferry.json:
+  kind:  signing-key
+  name:  acme-<env>-signing-key
+  value: base64-32, made by secretferry
+  provision makes by default: acme-production-01-signing-key, acme-sandbox-01-signing-key, acme-staging-01-signing-key
+The same thing as a command:
+  secretferry config add-secret --kind signing-key --template 'acme-{env}-signing-key' --pattern 'env=(sandbox|staging|production)-[0-9]{2}' --rule base64-32 --generate base64-32 --default env=sandbox-01 --default env=staging-01 --default env=production-01
+
+Add it? [Y]:
+```
+
+The defaults are: the kind `api-key` (until you have one); the name template
+`<your directory's name>-{env}-<kind>`; for each placeholder a pattern by its name (`env`:
+`(sandbox|staging|production)-[0-9]{2}`, `version`: `[1-9][0-9]{0,5}`, anything else: lower-case words
+joined by hyphens); a value that secretferry makes, as padded base64; and, for `env` only, the values
+`sandbox-01,staging-01,production-01` for `provision` to make. Choose option 3 for a key someone else
+issues, and it asks what the value must look like (default `printable`). A wrong answer is explained and
+asked again, and the whole file is checked before it is written, exactly as with flags. The command it
+prints at the end is the flags form of what you just answered: copy it into a script or a runbook.
+
+It only asks when standard input is a terminal and you give no flags (other than `--config`). In a
+script or CI, or with some flags but not all of the required ones, it does not ask: it says what is
+missing.
+
+### With flags
+
+Step 2 above makes this file (add `--rule printable` and no `--generate` for a key
 someone else issues, which you supply with `set`):
 
 ```json

@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/maddiecs84/secretferry/internal/config"
 	"github.com/maddiecs84/secretferry/internal/ferry"
 	"github.com/maddiecs84/secretferry/internal/prompt"
@@ -25,11 +27,14 @@ import (
 // Env is everything the commands touch outside themselves, so a test can
 // replace each of it.
 type Env struct {
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-	Getenv func(string) string
-	Getwd  func() (string, error)
+	Stdin io.Reader
+	// StdinIsTerminal says whether standard input is a person at a terminal, which is
+	// what lets `config add-secret` ask questions. Nil means no.
+	StdinIsTerminal func() bool
+	Stdout          io.Writer
+	Stderr          io.Writer
+	Getenv          func(string) string
+	Getwd           func() (string, error)
 	// HTTP and BaseURL point the Cloudflare client somewhere else; empty means the real API.
 	HTTP    *http.Client
 	BaseURL string
@@ -47,15 +52,16 @@ type Env struct {
 // DefaultEnv is the real process.
 func DefaultEnv(version string) Env {
 	return Env{
-		Stdin:         os.Stdin,
-		Stdout:        os.Stdout,
-		Stderr:        os.Stderr,
-		Getenv:        os.Getenv,
-		Getwd:         os.Getwd,
-		HTTP:          &http.Client{Timeout: httpTimeout},
-		OP:            onepassword.ExecRunner(),
-		WranglerToken: cloudflare.WranglerAuthToken,
-		Version:       version,
+		Stdin:           os.Stdin,
+		StdinIsTerminal: func() bool { return term.IsTerminal(int(os.Stdin.Fd())) },
+		Stdout:          os.Stdout,
+		Stderr:          os.Stderr,
+		Getenv:          os.Getenv,
+		Getwd:           os.Getwd,
+		HTTP:            &http.Client{Timeout: httpTimeout},
+		OP:              onepassword.ExecRunner(),
+		WranglerToken:   cloudflare.WranglerAuthToken,
+		Version:         version,
 	}
 }
 
@@ -72,6 +78,7 @@ Usage:
   secretferry check
   secretferry provision (--name <name>... | --secret <kind> [--param k=v ...])
   secretferry config init [--account <id>] [--vault <name>]
+  secretferry config add-secret                (in a terminal, with no flags: asks step by step, with defaults)
   secretferry config add-secret --kind <kind> --template <name-template> --pattern <placeholder>=<regex>...
                                 [--rule <rule>] [--message <text>] [--generate <form>]
                                 [--default <placeholder>=<value>...] [--rotate-warning <text>]

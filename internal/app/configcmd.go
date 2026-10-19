@@ -138,15 +138,27 @@ func runInit(env Env, opts *options) ([]string, error) {
 	if opts.vault == "" {
 		lines = append(lines, "Add onePassword.vault to use provision or --source 1password.")
 	}
-	return append(lines, "Next, add a secret: secretferry config add-secret --kind <kind> --template <name-template> --pattern <placeholder>=<regex>"), nil
+	return append(lines, "Next, add a secret: run `secretferry config add-secret` with no arguments for a guided setup, or give --kind, --template and a --pattern for each placeholder."), nil
 }
 
-// runAddSecret adds one secret to the configuration. The result is checked as a
-// whole (a duplicate kind, a template with no pattern, a generate form its own
-// rule refuses, a name another secret also produces) before anything is
-// written, and the file is replaced in one step, so a refused add leaves it as it was.
+// hasAddFlags reports whether any flag that describes a secret was given.
+func hasAddFlags(opts *options) bool {
+	return opts.kind != "" || opts.template != "" || opts.rule != "" || opts.message != "" ||
+		opts.generate != "" || opts.rotateWarning != "" || len(opts.patterns) > 0 || len(opts.defaults) > 0
+}
+
+// runAddSecret adds one secret to the configuration, described by flags, or step by
+// step when none are given and standard input is a terminal. Either way the file
+// with the new secret in it is checked as a whole (a duplicate kind, a template with
+// no pattern, a generate form its own rule refuses, a name another secret also
+// produces) before anything is written, and it is replaced in one step, so a refused
+// add leaves it as it was.
 func runAddSecret(env Env, opts *options) ([]string, error) {
-	if opts.kind == "" || opts.template == "" {
+	guided := !hasAddFlags(opts)
+	if guided && (env.StdinIsTerminal == nil || !env.StdinIsTerminal()) {
+		return nil, ferry.Errorf("add-secret needs --kind and --template, and a --pattern <placeholder>=<regex> for each {placeholder} in the template. Run it with no arguments in a terminal for a guided setup.")
+	}
+	if !guided && (opts.kind == "" || opts.template == "") {
 		return nil, ferry.Errorf("add-secret needs --kind and --template, and a --pattern <placeholder>=<regex> for each {placeholder} in the template.")
 	}
 	path, err := configPath(opts.config, env)
@@ -158,6 +170,18 @@ func runAddSecret(env Env, opts *options) ([]string, error) {
 		return nil, err
 	}
 
+	if guided {
+		return runGuided(env, cfg, path)
+	}
+	secret, err := secretFromOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	return commitSecret(cfg, path, secret)
+}
+
+// secretFromOptions is the secret the add-secret flags describe.
+func secretFromOptions(opts *options) (config.Secret, error) {
 	secret := config.Secret{
 		Kind:          opts.kind,
 		Name:          opts.template,
@@ -165,15 +189,19 @@ func runAddSecret(env Env, opts *options) ([]string, error) {
 		Generate:      opts.generate,
 		RotateWarning: opts.rotateWarning,
 	}
+	var err error
 	if secret.Params, err = keyValues(opts.patterns, "--pattern", "env=(sandbox|staging|production)-[0-9]{2}"); err != nil {
-		return nil, err
+		return config.Secret{}, err
 	}
-	defaults, err := keyValueLists(opts.defaults, "--default", "env=sandbox-01")
-	if err != nil {
-		return nil, err
+	if secret.Defaults, err = keyValueLists(opts.defaults, "--default", "env=sandbox-01"); err != nil {
+		return config.Secret{}, err
 	}
-	secret.Defaults = defaults
+	return secret, nil
+}
 
+// commitSecret adds the secret to the file as written, checks the result as a
+// whole, and replaces the file only if it is valid.
+func commitSecret(cfg *config.Config, path string, secret config.Secret) ([]string, error) {
 	raw := cfg.Raw
 	raw.Secrets = append(append([]config.Secret(nil), raw.Secrets...), secret)
 	text := config.Render(raw)
@@ -185,7 +213,7 @@ func runAddSecret(env Env, opts *options) ([]string, error) {
 		return nil, err
 	}
 
-	kind, _ := added.Kind(opts.kind)
+	kind, _ := added.Kind(secret.Kind)
 	return []string{
 		fmt.Sprintf("Added %s to %s.", kind.Kind, path),
 		"  name: " + kind.Template.Form(),
