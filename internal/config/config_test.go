@@ -219,3 +219,76 @@ func TestSourceDefaultsToThePromptAndIsChecked(t *testing.T) {
 		t.Errorf("1password with a vault: %v", err)
 	}
 }
+
+func TestAGeneratedValueMustPassItsOwnRule(t *testing.T) {
+	const kind = `"kind":"k","name":"n"`
+	for name, c := range map[string]struct {
+		secret string
+		ok     bool
+	}{
+		"matching form":         {`{` + kind + `,"value":{"rule":"base64-32"},"generate":"base64-32"}`, true},
+		"matching url form":     {`{` + kind + `,"value":{"rule":"base64url-32"},"generate":"base64url-32"}`, true},
+		"no rule at all":        {`{` + kind + `,"generate":"base64-32"}`, true},
+		"a custom pattern met":  {`{` + kind + `,"value":{"rule":"regex:[A-Za-z0-9+/]{43}="},"generate":"base64-32"}`, true},
+		"padded rule, url form": {`{` + kind + `,"value":{"rule":"base64-32"},"generate":"base64url-32"}`, false},
+		"url rule, padded form": {`{` + kind + `,"value":{"rule":"base64url-32"},"generate":"base64-32"}`, false},
+		"a pattern never met":   {`{` + kind + `,"value":{"rule":"regex:sk-.*"},"generate":"base64-32"}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(`{"secrets":[`+c.secret+`]}`), "test.json")
+			switch {
+			case c.ok && err != nil:
+				t.Errorf("refused: %v", err)
+			case !c.ok && (err == nil || !strings.Contains(err.Error(), "does not pass its own value rule")):
+				t.Errorf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestTwoKindsMayNotProduceTheSameName(t *testing.T) {
+	secrets := func(a, b string) string {
+		return `{"secrets":[
+			{"kind":"a","name":"` + a + `","params":{"env":"[a-z]+"},"defaults":{"env":["dev"]}},
+			{"kind":"b","name":"` + b + `","params":{"env":"[a-z]+"},"defaults":{"env":["dev"]}}]}`
+	}
+	_, err := Parse([]byte(secrets("acme-{env}-key", "acme-{env}-key")), "test.json")
+	if err == nil || !strings.Contains(err.Error(), `"a" and "b" both produce "acme-dev-key"`) {
+		t.Errorf("identical templates: %v", err)
+	}
+	// One template can swallow another's names without being identical.
+	_, err = Parse([]byte(`{"secrets":[
+		{"kind":"a","name":"acme-{env}","params":{"env":"[a-z-]+"},"defaults":{"env":["dev"]}},
+		{"kind":"b","name":"acme-{env}-key","params":{"env":"[a-z]+"},"defaults":{"env":["dev"]}}]}`), "test.json")
+	if err == nil || !strings.Contains(err.Error(), "both produce") {
+		t.Errorf("overlapping templates: %v", err)
+	}
+	if _, err := Parse([]byte(secrets("acme-{env}-key", "acme-{env}-token")), "test.json"); err != nil {
+		t.Errorf("distinct templates: %v", err)
+	}
+	// Without defaults there is nothing to sample, so nothing is claimed.
+	if _, err := Parse([]byte(`{"secrets":[
+		{"kind":"a","name":"acme-{env}","params":{"env":"[a-z]+"}},
+		{"kind":"b","name":"acme-{env}","params":{"env":"[a-z]+"}}]}`), "test.json"); err != nil {
+		t.Errorf("no defaults: %v", err)
+	}
+}
+
+func TestMissingDefaultsAndAccountIDs(t *testing.T) {
+	cfg := loadExample(t)
+	wrapping, _ := cfg.Kind("wrapping-key")
+	signing, _ := cfg.Kind("signing-key")
+	vendor, _ := cfg.Kind("vendor-api-key")
+	if got := strings.Join(wrapping.MissingDefaults(), ","); got != "version" {
+		t.Errorf("wrapping-key lacks %q", got)
+	}
+	if len(signing.MissingDefaults()) != 0 {
+		t.Errorf("signing-key lacks %v", signing.MissingDefaults())
+	}
+	if got := strings.Join(vendor.MissingDefaults(), ","); got != "env" {
+		t.Errorf("vendor-api-key lacks %q", got)
+	}
+	if !ValidAccountID(strings.Repeat("a", 32)) || ValidAccountID("A"+strings.Repeat("a", 31)) || ValidAccountID("short") || ValidAccountID("") {
+		t.Error("ValidAccountID accepts or refuses the wrong thing")
+	}
+}

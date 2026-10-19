@@ -37,7 +37,21 @@ You also need:
 
 ## Quick start
 
-Put a `secretferry.json` at the root of your project (see [`examples/secretferry.json`](examples/secretferry.json)):
+Every command reads a `secretferry.json`. Make a starter and check it (neither needs a token, the
+network or 1Password):
+
+```sh
+secretferry config init --account <your 32-character Cloudflare account id> --vault <your 1Password vault>
+secretferry config validate
+```
+
+`init` writes one example secret for you to replace, and never overwrites a file that is there.
+`validate` loads the file, which checks every rule in it, and shows what it means: each secret's name
+form, value rule, and the names `provision` would make. It exits 1 with the reason if the file is
+wrong, so it also suits CI. There is no command that edits the file; it is plain JSON, so edit it
+by hand and run `validate`.
+
+Or write one yourself (see [`examples/secretferry.json`](examples/secretferry.json)):
 
 ```json
 {
@@ -80,6 +94,11 @@ secretferry rotate --name acme-sandbox-01-signing-key --confirm acme-sandbox-01-
 secretferry list     # names only, sorted
 secretferry check    # secrets in the store that no name template in your config produces
 ```
+
+What the configuration checks when it loads, whichever command you run: a `generate` form that
+fails its own `value.rule` (so `provision` could never succeed), two secrets whose templates
+produce the same name (so one would never be the one that checks the value), a `source` of
+`1password` with no vault, and any field it does not recognise.
 
 ## Why the value is never an argument
 

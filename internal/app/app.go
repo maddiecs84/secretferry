@@ -71,9 +71,13 @@ Usage:
   secretferry list
   secretferry check
   secretferry provision (--name <name>... | --secret <kind> [--param k=v ...])
+  secretferry config validate
+  secretferry config init [--account <id>] [--vault <name>]
   secretferry version
 
-Every command also takes --config <file> (default: the nearest secretferry.json).
+Every command also takes --config <file> (default: the nearest secretferry.json). config
+validate and config init need no token, network or 1Password: validate checks the file and
+shows what it means, and init writes a starter file, never over one that is there.
 
 A name is whatever the configuration's name templates produce. --source says where set and
 rotate read the value from: prompt (the default: typed or pasted and shown nowhere on a
@@ -121,10 +125,13 @@ func Run(args []string, env Env) int {
 
 func dispatch(ctx context.Context, args []string, env Env) ([]string, error) {
 	command, rest := args[0], args[1:]
+	if command == "config" {
+		return dispatchConfig(rest, env)
+	}
 	allowed, ok := commandFlags[command]
 	if !ok {
 		// The word is not quoted: it may be the value itself.
-		return nil, ferry.Errorf("Unknown command. The commands are set, rotate, list, check, provision and version. %s", valueHint)
+		return nil, ferry.Errorf("Unknown command. The commands are set, rotate, list, check, provision, config and version. %s", valueHint)
 	}
 	opts, err := parseOptions(command, rest, allowed)
 	if err != nil {
@@ -451,6 +458,8 @@ type options struct {
 	params  map[string][]string
 	confirm string
 	source  string
+	account string
+	vault   string
 }
 
 var commandFlags = map[string][]string{
@@ -459,6 +468,9 @@ var commandFlags = map[string][]string{
 	"list":      {"config"},
 	"check":     {"config"},
 	"provision": {"config", "name", "secret", "param"},
+
+	"config validate": {"config"},
+	"config init":     {"config", "account", "vault"},
 }
 
 type listFlag struct{ values []string }
@@ -480,7 +492,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		}
 		return false
 	}
-	var names, params, configs, secrets, confirms, sources listFlag
+	var names, params, configs, secrets, confirms, sources, accounts, vaults listFlag
 	if has("config") {
 		set.Var(&configs, "config", "")
 	}
@@ -498,6 +510,12 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 	}
 	if has("source") {
 		set.Var(&sources, "source", "")
+	}
+	if has("account") {
+		set.Var(&accounts, "account", "")
+	}
+	if has("vault") {
+		set.Var(&vaults, "vault", "")
 	}
 
 	if err := set.Parse(args); err != nil {
@@ -531,6 +549,12 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 		return nil, err
 	}
 	if opts.source, err = once("source", sources); err != nil {
+		return nil, err
+	}
+	if opts.account, err = once("account", accounts); err != nil {
+		return nil, err
+	}
+	if opts.vault, err = once("vault", vaults); err != nil {
 		return nil, err
 	}
 	// Not quoted, like every word the user typed that is not yet known to be one of ours.

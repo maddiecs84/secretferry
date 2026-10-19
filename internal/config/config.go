@@ -211,8 +211,13 @@ func (c *Config) validate() error {
 			return ferry.Errorf("secret %q: %v", s.Kind, err)
 		}
 		if s.Generate != "" {
-			if _, err := value.Generate(s.Generate, strings.NewReader(strings.Repeat("x", 32))); err != nil {
+			sample, err := value.Generate(s.Generate, strings.NewReader(strings.Repeat("x", 32)))
+			if err != nil {
 				return ferry.Errorf("secret %q: %v", s.Kind, err)
+			}
+			// provision would make a key its own rule then refuses.
+			if err := rule.Check(sample); err != nil {
+				return ferry.Errorf("secret %q: a value made by generate %q does not pass its own value rule %q", s.Kind, s.Generate, rule.Spec())
 			}
 		}
 		for param, values := range s.Defaults {
@@ -227,7 +232,45 @@ func (c *Config) validate() error {
 		}
 		c.Kinds = append(c.Kinds, &Kind{Secret: s, Template: template, Rule: rule})
 	}
+	return c.checkDistinct()
+}
+
+// checkDistinct refuses two kinds that produce the same name: Match takes the
+// first, so the second would never be the one that checks the value. It can
+// only see the names the defaults expand to.
+func (c *Config) checkDistinct() error {
+	for _, k := range c.Kinds {
+		names, err := k.Names(nil)
+		if err != nil {
+			continue // no defaults for some placeholder: there is nothing to sample
+		}
+		for _, name := range names {
+			for _, other := range c.Kinds {
+				if other == k {
+					continue
+				}
+				if _, ok := other.Template.Parse(name); ok {
+					return ferry.Errorf("secrets %q and %q both produce %q; make their name templates distinguishable", k.Kind, other.Kind, name)
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// ValidAccountID reports whether s is a 32-character Cloudflare account id.
+func ValidAccountID(s string) bool { return accountRe.MatchString(s) }
+
+// MissingDefaults lists the placeholders that have no default, so provision
+// needs a --param for each.
+func (k *Kind) MissingDefaults() []string {
+	var missing []string
+	for _, param := range k.Template.Params() {
+		if len(k.Defaults[param]) == 0 {
+			missing = append(missing, param)
+		}
+	}
+	return missing
 }
 
 func hasParam(t *naming.Template, name string) bool {
