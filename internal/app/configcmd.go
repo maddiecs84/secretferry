@@ -17,15 +17,22 @@ import (
 // the network or 1Password.
 func dispatchConfig(args []string, env Env) ([]string, error) {
 	if len(args) == 0 {
-		return nil, ferry.Errorf("config needs a subcommand: init, add-secret or validate.")
+		return nil, ferry.Errorf("config needs a subcommand: init, add-secret or validate. Run `secretferry config --help` for what each does.")
 	}
 	sub, rest := args[0], args[1:]
+	if sub == "-h" || sub == "--help" || sub == "help" {
+		return []string{configHelp()}, nil
+	}
 	allowed, ok := commandFlags["config "+sub]
 	if !ok {
 		// The word is not quoted: it may be the value itself.
-		return nil, ferry.Errorf("Unknown config subcommand. The subcommands are init, add-secret and validate. %s", valueHint)
+		return nil, ferry.Errorf("Unknown config subcommand. The subcommands are init, add-secret and validate. Run `secretferry config --help` for what each does. %s", valueHint)
 	}
 	opts, err := parseOptions("config "+sub, rest, allowed)
+	if errors.Is(err, errHelp) {
+		d, _ := docFor("config " + sub)
+		return []string{commandHelp(d)}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

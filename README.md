@@ -35,6 +35,20 @@ You also need:
 - the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`, or `op.exe` under WSL),
   signed in, for `provision` and `--source 1password`.
 
+## Getting help
+
+```sh
+secretferry --help                    # the commands, the environment variables, the configuration
+secretferry <command> --help          # a command's usage, every option, and examples
+secretferry help <command>            # the same
+secretferry config --help             # the config commands: init, add-secret, validate
+secretferry config add-secret --help
+```
+
+Help needs no configuration file, token, network or 1Password, and exits 0. Each command's options
+are described in its own help, which is checked against what the command accepts, and every example
+in it is checked to parse and to fit [`examples/secretferry.json`](examples/secretferry.json).
+
 ## Quick start
 
 Every command reads a `secretferry.json`. Make one, add the secrets it should manage, and check it.

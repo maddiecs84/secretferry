@@ -67,55 +67,31 @@ func DefaultEnv(version string) Env {
 
 const valueHint = "The value is never an argument: it is read from a prompt or standard input."
 
-const usage = `secretferry moves a secret from where it is kept (1Password) to where it is used
-(Cloudflare Secrets Store), without the value ever being an argument, a log line or an
-error message.
-
-Usage:
-  secretferry set       (--name <name> | --secret <kind> [--param k=v ...]) [--source <source>] [--auto-generate]
-  secretferry rotate    (--name <name> | --secret <kind> [--param k=v ...]) --confirm <name> [--source <source>]
-  secretferry list
-  secretferry check
-  secretferry provision (--name <name>... | --secret <kind> [--param k=v ...])
-  secretferry config init [--account <id>] [--vault <name>]
-  secretferry config add-secret                (in a terminal, with no flags: asks step by step, with defaults)
-  secretferry config add-secret --kind <kind> --template <name-template> --pattern <placeholder>=<regex>...
-                                [--rule <rule>] [--message <text>] [--generate <form>]
-                                [--default <placeholder>=<value>...] [--rotate-warning <text>]
-  secretferry config validate
-  secretferry version
-
-Every command also takes --config <file> (default: the nearest secretferry.json). config
-init, add-secret and validate need no token, network or 1Password: init writes an empty file
-(never over one that is there), add-secret adds a secret to it after checking the result is
-valid, and validate checks the file and shows what it means.
-
-A name is whatever the configuration's name templates produce. --source says where set and
-rotate read the value from: prompt (the default: typed or pasted and shown nowhere on a
-terminal, else standard input), stdin (standard input to the end, even on a terminal) or
-1password (the item the configuration names). The configuration's "source" sets a default.
-With set --auto-generate, a value that is not given (a blank answer, blank standard input, or no
-1Password item yet) is made in the secret's "generate" form, saved in 1Password and read back
-before it is set. A value that is given but wrong is refused, never replaced. Cloudflare never shows a stored value again, so make
-your copy BEFORE the value is set; provision does that for you: it makes the key, saves it
-in 1Password, checks it reads back, and only then sets it.
-
-Needs a token that can edit Secrets Store: CLOUDFLARE_API_TOKEN (Account Secrets Store:
-Edit), or the login of wrangler (` + "`wrangler login`" + `) when wrangler is on your PATH.
-CLOUDFLARE_ACCOUNT_ID overrides the configured account.
-`
-
 // Run executes one command line (without the program name) and returns the exit code.
 func Run(args []string, env Env) int {
 	if len(args) == 0 {
-		_, _ = io.WriteString(env.Stdout, usage)
+		_, _ = fmt.Fprintln(env.Stdout, overview())
 		return 2
 	}
 	switch args[0] {
-	case "-h", "--help", "help":
-		_, _ = io.WriteString(env.Stdout, usage)
+	case "-h", "--help":
+		_, _ = fmt.Fprintln(env.Stdout, overview())
+		return 0
+	case "help":
+		text, ok := helpFor(args[1:])
+		if !ok {
+			// The words are not quoted: they may be the value itself.
+			_, _ = fmt.Fprintln(env.Stderr, "There is no help for that. Run `secretferry --help` for the commands.")
+			return 1
+		}
+		_, _ = fmt.Fprintln(env.Stdout, text)
 		return 0
 	case "version", "--version":
+		if len(args) > 1 && (args[1] == "-h" || args[1] == "--help") {
+			d, _ := docFor("version")
+			_, _ = fmt.Fprintln(env.Stdout, commandHelp(d))
+			return 0
+		}
 		_, _ = fmt.Fprintf(env.Stdout, "secretferry %s\n", env.Version)
 		return 0
 	}
@@ -145,9 +121,13 @@ func dispatch(ctx context.Context, args []string, env Env) ([]string, error) {
 	allowed, ok := commandFlags[command]
 	if !ok {
 		// The word is not quoted: it may be the value itself.
-		return nil, ferry.Errorf("Unknown command. The commands are set, rotate, list, check, provision, config and version. %s", valueHint)
+		return nil, ferry.Errorf("Unknown command. The commands are set, rotate, list, check, provision, config and version. Run `secretferry --help` for what each does. %s", valueHint)
 	}
 	opts, err := parseOptions(command, rest, allowed)
+	if errors.Is(err, errHelp) {
+		d, _ := docFor(command)
+		return []string{commandHelp(d)}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -691,7 +671,7 @@ func parseOptions(command string, args []string, allowed []string) (*options, er
 
 	if err := set.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return nil, ferry.Errorf("%s", strings.TrimSpace(usage))
+			return nil, errHelp
 		}
 		return nil, ferry.Errorf("Only --%s are options for %s. %s", strings.Join(allowed, ", --"), command, valueHint)
 	}
