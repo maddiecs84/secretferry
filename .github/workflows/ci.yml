@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - name: Module files are tidy
+        run: go mod tidy -diff
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+
+  # The tool is one binary per platform, so each target must keep building.
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - env:
+          CGO_ENABLED: "0"
+          TARGET: ${{ matrix.target }}
+        run: GOOS="${TARGET%/*}" GOARCH="${TARGET#*/}" go build -o /dev/null ./cmd/secretferry
