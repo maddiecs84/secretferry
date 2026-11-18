@@ -203,20 +203,23 @@ func runGuided(env Env, cfg *config.Config, path string) ([]string, error) {
 	who, err := a.choose("Who makes the value?", []string{
 		"secretferry makes it: 32 random bytes as padded base64",
 		"secretferry makes it: 32 random bytes as base64url (no padding)",
+		"secretferry makes it: a P-256 private key as a JSON Web Key (an ES256 signing key)",
 		"someone else issues it, and you supply it with `set`",
 	}, 1)
 	if err != nil {
 		return nil, err
 	}
-	generated := who != 3
+	generated := who != 4
 	switch who {
 	case 1:
 		secret.Generate, secret.Value.Rule = "base64-32", "base64-32"
 	case 2:
 		secret.Generate, secret.Value.Rule = "base64url-32", "base64url-32"
+	case 3:
+		secret.Generate, secret.Value.Rule = "p256-jwk", "p256-jwk"
 	default:
 		a.say("\n")
-		secret.Value.Rule, err = a.ask("What must the value look like? (any, base64-32, base64url-32, printable, regex:<pattern>)", "printable", func(s string) error {
+		secret.Value.Rule, err = a.ask("What must the value look like? (any, base64-32, base64url-32, p256-jwk, printable, regex:<pattern>)", "printable", func(s string) error {
 			_, err := value.ParseRule(s, "")
 			return err
 		})

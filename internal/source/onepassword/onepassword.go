@@ -5,6 +5,7 @@ package onepassword
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"os/exec"
@@ -76,7 +77,26 @@ func (c *Client) Get(title string) (password string, ok bool, err error) {
 		}
 		return "", false, nil
 	}
-	return strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r"), true, nil
+	return unquote(strings.TrimSuffix(strings.TrimSuffix(out, "\n"), "\r")), true, nil
+}
+
+// unquote undoes the quoting `op item get --fields` puts round a value that holds a comma or a
+// double quote, which it prints as one field of a CSV record: "a,b" for a,b and """q""" for "q". A
+// JSON Web Key is all of that, and a read-back that came back quoted would never match the key it
+// was made from. Only a whole value wrapped in double quotes that parses as one CSV field is
+// unwrapped; anything else is returned as it was, so a base64 key, a vendor key and a key `op`
+// printed without quoting are all unchanged. (A value that is itself wrapped in quotes and which
+// `op` printed raw would be unwrapped here, read back as something else, and refused before
+// anything is sent: the failure is safe, and no value secretferry makes looks like that.)
+func unquote(out string) string {
+	if len(out) < 2 || out[0] != '"' || out[len(out)-1] != '"' {
+		return out
+	}
+	record, err := csv.NewReader(strings.NewReader(out)).Read()
+	if err != nil || len(record) != 1 {
+		return out
+	}
+	return record[0]
 }
 
 // Create saves a password item. The item is JSON on standard input.

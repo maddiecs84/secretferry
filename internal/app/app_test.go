@@ -31,6 +31,9 @@ type harness struct {
 	// The fake 1Password vault: item title to password.
 	items        map[string]string
 	opNotInstall bool
+	// opQuotesCSV makes `item get` print a value with a comma or a double quote as one quoted CSV
+	// field, as `op item get --fields` does: "a,b", and """q""" for "q".
+	opQuotesCSV bool
 	// breakReadback makes a created item read back as something else; breakOnly limits it to
 	// titles containing that text.
 	breakReadback bool
@@ -95,6 +98,9 @@ func (h *harness) op(args []string, stdin string) (string, error) {
 		password, ok := h.items[args[2]]
 		if !ok {
 			return "", errors.New("isn't an item")
+		}
+		if h.opQuotesCSV && strings.ContainsAny(password, "\",") {
+			password = `"` + strings.ReplaceAll(password, `"`, `""`) + `"`
 		}
 		return password + "\n", nil
 	case len(args) >= 2 && args[0] == "item" && args[1] == "create":
