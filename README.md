@@ -125,7 +125,8 @@ Pattern for {env} [(sandbox|staging|production)-[0-9]{2}]:
 Who makes the value?
   1. secretferry makes it: 32 random bytes as padded base64
   2. secretferry makes it: 32 random bytes as base64url (no padding)
-  3. someone else issues it, and you supply it with `set`
+  3. secretferry makes it: a P-256 private key as a JSON Web Key (an ES256 signing key)
+  4. someone else issues it, and you supply it with `set`
 Choice [1]:
 Values for {env} [sandbox-01,staging-01,production-01]:
 What does replacing it lose? One sentence, shown when someone rotates it (Enter for the standard warning):
@@ -145,7 +146,7 @@ The defaults are: the kind `api-key` (until you have one); the name template
 `<your directory's name>-{env}-<kind>`; for each placeholder a pattern by its name (`env`:
 `(sandbox|staging|production)-[0-9]{2}`, `version`: `[1-9][0-9]{0,5}`, anything else: lower-case words
 joined by hyphens); a value that secretferry makes, as padded base64; and, for `env` only, the values
-`sandbox-01,staging-01,production-01` for `provision` to make. Choose option 3 for a key someone else
+`sandbox-01,staging-01,production-01` for `provision` to make. Choose option 4 for a key someone else
 issues, and it asks what the value must look like (default `printable`). A wrong answer is explained and
 asked again, and the whole file is checked before it is written, exactly as with flags. The command it
 prints at the end is the flags form of what you just answered: copy it into a script or a runbook.
@@ -240,6 +241,46 @@ fails its own `value.rule` (so `provision` could never succeed), two secrets who
 produce the same name (so one would never be the one that checks the value), a `source` of
 `1password` with no vault, and any field it does not recognise.
 
+### An ES256 key: `p256-jwk`
+
+Some secrets are not 32 random bytes but a signing key: a Worker that signs a client assertion with
+`private_key_jwt` (RFC 7523) needs a P-256 private key as a JSON Web Key, and the public half it
+publishes is worked out from the same value. `generate: "p256-jwk"` makes that key, and
+`value.rule: "p256-jwk"` checks one you supply:
+
+```sh
+secretferry config add-secret \
+  --kind client-key \
+  --template 'acme-{env}-client-key' \
+  --pattern 'env=(sandbox|staging|production)-[0-9]{2}' \
+  --rule p256-jwk --generate p256-jwk \
+  --default env=sandbox-01 --default env=staging-01 --default env=production-01
+secretferry provision --secret client-key
+```
+
+The value is the key as one line of JSON, as WebCrypto's `exportKey("jwk", key)` writes it, so a
+Worker reads it with `JSON.parse(await env.CLIENT_KEY.get())` and `crypto.subtle.importKey("jwk", …)`:
+
+```json
+{"crv":"P-256","d":"…","ext":true,"key_ops":["sign"],"kty":"EC","x":"…","y":"…"}
+```
+
+`d` is made from 32 random bytes (asked for again in the one case in 2^32 that they are not a valid
+private key), and `x` and `y` are worked out from it, so the three always belong together. The
+rule accepts a key from anywhere else under the same checks: `kty` is `EC`, `crv` is `P-256`, `d`,
+`x` and `y` are 32 bytes of unpadded base64url, `x` and `y` are `d`'s public half (a key whose pair
+does not match would sign with one key and publish another), and `alg`, `use` and `key_ops`, when
+present, say `ES256`, `sig` and `sign`. Only the private half is kept: the public half is in the
+same value, and a service that publishes it reads it from there.
+
+`provision` and `set --auto-generate` back the key up in 1Password and read it back before Cloudflare
+is written to, as for every other secret. `op item get --fields` prints a value that holds a comma
+or a double quote as one quoted CSV field, which a JSON key always does, so the read-back unwraps a
+value that comes back wrapped in double quotes and parses as one CSV field, and leaves every other
+value as it was. That unwrapping is tested against a fake that quotes like that, **not against a
+real `op`**: if a key does not read back, the run stops before Cloudflare is written to and says
+so.
+
 ## Why the value is never an argument
 
 Cloudflare never returns a stored value, to anyone, so **the only copy of a key is the one made
@@ -276,9 +317,9 @@ secretferry looks for `secretferry.json` in the working directory and then each 
 | `secrets[].kind` | The short name `--secret` takes. `add-secret --kind` |
 | `secrets[].name` | A name template such as `acme-{env}-signing-key`. `add-secret --template` |
 | `secrets[].params` | A regular expression for each `{placeholder}`, which a value must match in full. `add-secret --pattern <placeholder>=<regex>`, once for each |
-| `secrets[].value.rule` | `any`, `base64-32`, `base64url-32`, `printable` or `regex:<pattern>`. `add-secret --rule` |
+| `secrets[].value.rule` | `any`, `base64-32`, `base64url-32`, `p256-jwk`, `printable` or `regex:<pattern>`. `add-secret --rule` |
 | `secrets[].value.message` | Replaces the default text when the rule fails. Must not contain a value. `add-secret --message` |
-| `secrets[].generate` | `base64-32` or `base64url-32`: how `provision` makes the key. Leave out for a key someone else issues. `add-secret --generate` |
+| `secrets[].generate` | `base64-32`, `base64url-32` or `p256-jwk`: how `provision` makes the key. Leave out for a key someone else issues. `add-secret --generate` |
 | `secrets[].defaults` | The values `provision` uses for a placeholder when `--param` gives none; one secret per combination. `add-secret --default <placeholder>=<value>`, once for each |
 | `secrets[].rotateWarning` | What replacing this secret loses, shown when `rotate` is not confirmed. `add-secret --rotate-warning` |
 

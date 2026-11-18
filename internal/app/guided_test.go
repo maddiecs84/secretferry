@@ -97,7 +97,8 @@ func TestGuidedShowsItsDefaultsAndTheCommandThatDoesTheSame(t *testing.T) {
 		"Name template [my-project-x-{env}-signing-key]: ",
 		"Pattern for {env} [(sandbox|staging|production)-[0-9]{2}]: ",
 		"1. secretferry makes it: 32 random bytes as padded base64",
-		"3. someone else issues it",
+		"3. secretferry makes it: a P-256 private key as a JSON Web Key (an ES256 signing key)",
+		"4. someone else issues it",
 		"Choice [1]: ",
 		"Values for {env} [sandbox-01,staging-01,production-01]: ",
 		"This will add to " + path,
@@ -118,7 +119,7 @@ func TestGuidedWithAnswersOfItsOwn(t *testing.T) {
 		"vendor-key",
 		"acme-{env}-{region}-vendor",
 		"", "(eu|us)", // patterns: env takes the default
-		"3",                                      // someone else issues it
+		"4",                                      // someone else issues it
 		"regex:sk-[a-z]+", "Use the vendor key.", // its rule, and what to say when it fails
 		"sandbox-01,staging-01", "eu", // values for env, region
 		"the vendor must reissue it.",
@@ -149,7 +150,7 @@ func TestGuidedWithAnswersOfItsOwn(t *testing.T) {
 
 func TestGuidedIssuedElsewhereOffersNoDefaultValuesAndTheStandardRule(t *testing.T) {
 	// Enter all the way: a key someone else issues is "printable", and no environments are assumed.
-	h, path := guided(t, answers("vendor-key", "", "", "3", "", "", "", ""))
+	h, path := guided(t, answers("vendor-key", "", "", "4", "", "", "", ""))
 	if code := h.runPlain("config", "add-secret"); code != 0 {
 		t.Fatalf("exit %d: %s", code, h.stderr.String())
 	}
@@ -186,7 +187,7 @@ func TestGuidedAsksAgainOnABadAnswerAndSaysWhy(t *testing.T) {
 		"There is already a secret of that kind.":           1,
 		"stray brace": 1,
 		"That is not a valid regular expression.":          1,
-		"Choose a number from 1 to 3.":                     2,
+		"Choose a number from 1 to 4.":                     2,
 		`"UPPER-01" does not match the pattern for {env}.`: 1,
 		"Answer y or n.":                                   1,
 	} {
@@ -434,5 +435,22 @@ func TestGuidedOffersAPatternForEachPlaceholderByItsName(t *testing.T) {
 	}
 	if !reflect.DeepEqual(k.Defaults, map[string][]string{"env": {"sandbox-01", "staging-01", "production-01"}}) {
 		t.Errorf("defaults = %v: only env has values worth offering", k.Defaults)
+	}
+}
+
+func TestGuidedCanChooseAnES256KeyAndWritesTheRuleAndTheGeneratorForIt(t *testing.T) {
+	h, path := guided(t, answers("client-key", "", "", "3", "", "", "", ""))
+	if code := h.runPlain("config", "add-secret"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	k := loadKind(t, path, "client-key")
+	if k.Generate != "p256-jwk" || k.Value.Rule != "p256-jwk" {
+		t.Errorf("got %+v", k.Secret)
+	}
+	// Made by secretferry, so provision's environments are offered, and the command that does the same says how.
+	for _, want := range []string{"Values for {env} [sandbox-01,staging-01,production-01]", "--rule p256-jwk --generate p256-jwk", "value: p256-jwk, made by secretferry"} {
+		if !strings.Contains(h.stdout.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, h.stdout.String())
+		}
 	}
 }

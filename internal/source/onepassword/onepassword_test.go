@@ -36,6 +36,31 @@ func TestGetAsksForThePasswordFieldRevealedAndTrimsOneLineBreak(t *testing.T) {
 	}
 }
 
+// `op item get --fields` prints a value with a comma or a double quote as one quoted CSV field, and
+// a JSON Web Key is made of both. The cases are what op prints, and the value it printed.
+func TestGetUndoesTheQuotingOpPutsRoundACommaOrAQuote(t *testing.T) {
+	const jwk = `{"kty":"EC","crv":"P-256","x":"a","y":"b","d":"c"}`
+	for name, c := range map[string]struct{ out, want string }{
+		"a JSON key, as CSV":            {`"{""kty"":""EC"",""crv"":""P-256"",""x"":""a"",""y"":""b"",""d"":""c""}"` + "\n", jwk},
+		"a JSON key, as it is":          {jwk + "\n", jwk},
+		"a value with a comma":          {`"a,b"` + "\n", "a,b"},
+		"a value that is a quoted word": {`"""q"""` + "\n", `"q"`},
+		"padded base64":                 {"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
+		"a quote only at the start":     {`"abc` + "\n", `"abc`},
+		"two fields":                    {`"a","b"` + "\n", `"a","b"`},
+		"a lone quote":                  {`"` + "\n", `"`},
+		"quotes that do not parse":      {`"a"b"` + "\n", `"a"b"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run, _ := recorder(c.out, nil)
+			got, ok, err := (&Client{Vault: "V", Run: run}).Get("t")
+			if err != nil || !ok || got != c.want {
+				t.Errorf("Get = %q, %v, %v; want %q", got, ok, err, c.want)
+			}
+		})
+	}
+}
+
 func TestGetTreatsAFailedOpAsNoItem(t *testing.T) {
 	run, _ := recorder("", errors.New("exit status 1"))
 	got, ok, err := (&Client{Vault: "V", Run: run}).Get("t")

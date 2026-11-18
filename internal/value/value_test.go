@@ -2,7 +2,15 @@ package value
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -153,4 +161,186 @@ func TestNormaliseCountsBytesNotCharacters(t *testing.T) {
 	if _, err := Normalise(strings.Repeat("a", 1_000_000), 0); err != nil {
 		t.Errorf("no limit: %v", err)
 	}
+}
+
+// The EC P-256 example key of RFC 7515, appendix A.3. Its public half was worked out by someone
+// else, so a generator that derives it wrongly cannot agree with it.
+const (
+	rfcD = "jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI"
+	rfcX = "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU"
+	rfcY = "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+)
+
+func rfcJWK(extra string) string {
+	return `{"kty":"EC","crv":"P-256","x":"` + rfcX + `","y":"` + rfcY + `","d":"` + rfcD + `"` + extra + `}`
+}
+
+func TestGenerateP256JWKMakesTheRFCPublicHalfFromItsPrivateKey(t *testing.T) {
+	d, err := base64.RawURLEncoding.DecodeString(rfcD)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Generate("p256-jwk", bytes.NewReader(d))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jwk map[string]any
+	if err := json.Unmarshal([]byte(got), &jwk); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	want := map[string]any{"kty": "EC", "crv": "P-256", "x": rfcX, "y": rfcY, "d": rfcD, "ext": true, "key_ops": []any{"sign"}}
+	if !reflect.DeepEqual(jwk, want) {
+		t.Errorf("made %v, want %v", jwk, want)
+	}
+}
+
+func TestGenerateP256JWKMakesAKeyThatSignsAndVerifies(t *testing.T) {
+	got, err := Generate("p256-jwk", nil) // crypto/rand
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jwk struct{ D, X, Y string }
+	if err := json.Unmarshal([]byte(got), &jwk); err != nil {
+		t.Fatal(err)
+	}
+	num := func(s string) *big.Int {
+		b, err := base64.RawURLEncoding.DecodeString(s)
+		if err != nil || len(b) != 32 {
+			t.Fatalf("%q is not 32 bytes of unpadded base64url", s)
+		}
+		return new(big.Int).SetBytes(b)
+	}
+	key := &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P256(), X: num(jwk.X), Y: num(jwk.Y)}, D: num(jwk.D)}
+	digest := sha256.Sum256([]byte("client assertion"))
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Signed with d, verified with x and y: true only when the pair belongs together.
+	if !ecdsa.VerifyASN1(&key.PublicKey, digest[:], sig) {
+		t.Error("what d signs, x and y do not verify")
+	}
+	if err := mustRule(t, "p256-jwk").Check(got); err != nil {
+		t.Errorf("a made key fails its own rule: %v", err)
+	}
+}
+
+func TestGenerateP256JWKDiffersEachTime(t *testing.T) {
+	a, _ := Generate("p256-jwk", nil)
+	b, _ := Generate("p256-jwk", nil)
+	if a == b {
+		t.Error("two keys are the same")
+	}
+}
+
+func TestGenerateP256JWKAsksAgainWhenTheBytesAreNotAKey(t *testing.T) {
+	d, _ := base64.RawURLEncoding.DecodeString(rfcD)
+	notAKey := [][]byte{make([]byte, 32), bytes.Repeat([]byte{0xff}, 32)} // zero, and above the group's order
+	for _, first := range notAKey {
+		got, err := Generate("p256-jwk", io.MultiReader(bytes.NewReader(first), bytes.NewReader(d)))
+		if err != nil || !strings.Contains(got, rfcX) {
+			t.Errorf("after %x...: %q, %v: want the key the second read makes", first[:2], got, err)
+		}
+	}
+}
+
+func TestGenerateP256JWKGivesUpOnASourceThatIsNotRandom(t *testing.T) {
+	_, err := Generate("p256-jwk", bytes.NewReader(bytes.Repeat([]byte{0xff}, 32*20)))
+	if err == nil || !strings.Contains(err.Error(), "could not make a valid P-256 key") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestGenerateP256JWKSaysNothingOfWhatItReadWhenTheSourceFails(t *testing.T) {
+	_, err := Generate("p256-jwk", bytes.NewReader([]byte("short")))
+	if err == nil || err.Error() != "could not read random bytes" {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestP256JWKRule(t *testing.T) {
+	swapped := `{"kty":"EC","crv":"P-256","x":"` + rfcY + `","y":"` + rfcX + `","d":"` + rfcD + `"}`
+	cases := map[string]struct {
+		value string
+		ok    bool
+	}{
+		"the RFC key":                 {rfcJWK(""), true},
+		"as WebCrypto exports it":     {rfcJWK(`,"ext":true,"key_ops":["sign"]`), true},
+		"with alg, use and a kid":     {rfcJWK(`,"alg":"ES256","use":"sig","kid":"web-1"`), true},
+		"with whitespace":             {"{\n  \"kty\": \"EC\", \"crv\": \"P-256\",\n  \"x\": \"" + rfcX + "\", \"y\": \"" + rfcY + "\", \"d\": \"" + rfcD + "\"\n}", true},
+		"the public half only":        {`{"kty":"EC","crv":"P-256","x":"` + rfcX + `","y":"` + rfcY + `"}`, false},
+		"x and y swapped":             {swapped, false},
+		"another curve":               {strings.Replace(rfcJWK(""), "P-256", "P-384", 1), false},
+		"another key type":            {strings.Replace(rfcJWK(""), `"EC"`, `"OKP"`, 1), false},
+		"alg that is not ES256":       {rfcJWK(`,"alg":"ES384"`), false},
+		"use that is not sig":         {rfcJWK(`,"use":"enc"`), false},
+		"key_ops without sign":        {rfcJWK(`,"key_ops":["verify"]`), false},
+		"key_ops that is not a list":  {rfcJWK(`,"key_ops":"sign"`), false},
+		"d of 31 bytes":               {strings.Replace(rfcJWK(""), rfcD, rfcD[:41], 1), false},
+		"d with padding":              {strings.Replace(rfcJWK(""), rfcD, rfcD+"=", 1), false},
+		"d that is not base64url":     {strings.Replace(rfcJWK(""), rfcD, strings.Repeat("!", 43), 1), false},
+		"d that is a number":          {strings.Replace(rfcJWK(""), `"`+rfcD+`"`, "5", 1), false},
+		"d of zero":                   {strings.Replace(rfcJWK(""), rfcD, strings.Repeat("A", 43), 1), false},
+		"a field spelled in capitals": {strings.Replace(rfcJWK(""), `"kty"`, `"KTY"`, 1), false},
+		"not JSON":                    {"not a key", false},
+		"JSON that is not an object":  {`["EC","P-256"]`, false},
+		"null":                        {"null", false},
+		"a key then something else":   {rfcJWK("") + " trailing", false},
+		"two keys":                    {rfcJWK("") + rfcJWK(""), false},
+		"empty":                       {"", false},
+		"padded base64, not a key":    {key32, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := mustRule(t, "p256-jwk").Check(c.value) == nil; got != c.ok {
+				t.Errorf("accepted = %v, want %v", got, c.ok)
+			}
+		})
+	}
+}
+
+func TestP256JWKRuleSaysWhatIsWrongWithoutQuotingTheValue(t *testing.T) {
+	err := mustRule(t, "p256-jwk").Check(rfcJWK(`,"alg":"ES384"`))
+	if err == nil || !strings.Contains(err.Error(), "P-256 private key as a JSON Web Key") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, secret := range []string{rfcD, rfcX, rfcY} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("the message quotes the value: %v", err)
+		}
+	}
+}
+
+func TestEachGeneratorIsListedAndAnswersItsOwnRule(t *testing.T) {
+	for _, spec := range Generators {
+		got, err := Generate(spec, &bytes.Buffer{})
+		if err == nil {
+			t.Errorf("%s made %q from no bytes", spec, got)
+		}
+		made, err := Generate(spec, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", spec, err)
+		}
+		if err := mustRule(t, spec).Check(made); err != nil {
+			t.Errorf("a %s value fails the %s rule: %v", spec, spec, err)
+		}
+	}
+	for _, spec := range Generators {
+		found := false
+		for _, s := range Specs {
+			found = found || s == spec
+		}
+		if !found {
+			t.Errorf("%s makes values but is not a rule in Specs", spec)
+		}
+	}
+}
+
+func mustRule(t *testing.T, spec string) Rule {
+	t.Helper()
+	r, err := ParseRule(spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }
